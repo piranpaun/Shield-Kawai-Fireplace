@@ -44,8 +44,9 @@ class MainActivity : Activity() {
     private lateinit var pbTrackProgress: ProgressBar
 
     private var playlists: List<NavidromePlaylist> = emptyList()
-    private var currentPlaylistName: String = "Mezcla Aleatoria"
-    private var currentThemeIndex = 0
+    private var currentPlaylistName: String = "Random Mix"
+    private var currentSceneTheme: SceneTheme = SceneTheme.REALISTIC
+    private var currentKawaiiPaletteIndex = 0
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val hideHudRunnable = Runnable {
@@ -87,8 +88,10 @@ class MainActivity : Activity() {
         }
 
         configManager = ServerConfigManager(this)
-        currentThemeIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
-        applyTheme(KawaiiThemes.list[currentThemeIndex])
+        val savedMode = configManager.getSceneMode()
+        currentSceneTheme = SceneTheme.entries.firstOrNull { it.id == savedMode } ?: SceneTheme.REALISTIC
+        currentKawaiiPaletteIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
+        applyVisualTheme()
 
         val creds = configManager.getCredentials()
         navidromeClient = NavidromeClient(
@@ -97,8 +100,8 @@ class MainActivity : Activity() {
             username = creds.username,
             password = creds.password,
             onTrackChanged = { metadata ->
-                tvTrackTitle.text = metadata.title ?: "Pista desconocida"
-                tvArtistName.text = metadata.artist ?: "Artista desconocido"
+                tvTrackTitle.text = metadata.title ?: "Unknown Track"
+                tvArtistName.text = metadata.artist ?: "Unknown Artist"
                 ivCoverArt.load(metadata.artworkUri) {
                     crossfade(true)
                     transformations(RoundedCornersTransformation(24f))
@@ -130,44 +133,87 @@ class MainActivity : Activity() {
                 updateStatusBadge()
                 navidromeClient.loadAndPlayPlaylist(christmasList.id)
             } else {
-                currentPlaylistName = "Aleatorias (50)"
+                currentPlaylistName = "Random (50)"
                 updateStatusBadge()
                 navidromeClient.loadAndPlayRandomSongs(50)
             }
         }
     }
 
-    private fun applyTheme(theme: KawaiiTheme) {
-        renderer.currentTheme = theme
-        pbTrackProgress.progressTintList = ColorStateList.valueOf(theme.hudAccentHex)
-        tvStatusBadge.setTextColor(theme.hudAccentHex)
-        (hudContainer.background as? GradientDrawable)?.setStroke(4, theme.hudAccentHex)
+    private fun applyVisualTheme() {
+        renderer.sceneMode = currentSceneTheme
+        val kawaiiPalette = KawaiiThemes.list[currentKawaiiPaletteIndex]
+        renderer.currentTheme = kawaiiPalette
+
+        val accent = if (currentSceneTheme == SceneTheme.KAWAII) {
+            kawaiiPalette.hudAccentHex
+        } else {
+            currentSceneTheme.accentHex
+        }
+
+        pbTrackProgress.progressTintList = ColorStateList.valueOf(accent)
+        tvStatusBadge.setTextColor(accent)
+        (hudContainer.background as? GradientDrawable)?.setStroke(4, accent)
         updateStatusBadge()
     }
 
-    private fun cycleTheme() {
-        currentThemeIndex = (currentThemeIndex + 1) % KawaiiThemes.list.size
-        configManager.saveThemeIndex(currentThemeIndex)
-        applyTheme(KawaiiThemes.list[currentThemeIndex])
+    private fun cycleSceneTheme() {
+        val nextId = (currentSceneTheme.id + 1) % SceneTheme.entries.size
+        currentSceneTheme = SceneTheme.entries.first { it.id == nextId }
+        configManager.saveSceneMode(currentSceneTheme.id)
+        applyVisualTheme()
         showHudTemporarily()
     }
 
-    private fun showPlaylistSelectorDialog() {
-        val options = mutableListOf("🔀 Canciones Aleatorias (50 pistas)", "⚙️ Configurar Servidor Navidrome")
+    private fun showMenuDialog() {
+        val options = mutableListOf(
+            "🔥 Theme: Realistic Cozy 3D",
+            "🎨 Theme: Studio Ghibli Style",
+            "🧸 Theme: Kawaii Christmas",
+            "🌈 Kawaii Palette (${KawaiiThemes.list[currentKawaiiPaletteIndex].name})",
+            "🔀 Random Mix (50 tracks)",
+            "⚙️ Navidrome Server Settings"
+        )
         options.addAll(playlists.map { "🎵 ${it.name} (${it.songCount})" })
 
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Opciones y Listas de Navidrome")
+            .setTitle("Fireplace Themes & Navidrome")
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
-                    0 -> activityScope.launch {
-                        currentPlaylistName = "Mezcla Aleatoria"
+                    0 -> {
+                        currentSceneTheme = SceneTheme.REALISTIC
+                        configManager.saveSceneMode(currentSceneTheme.id)
+                        applyVisualTheme()
+                        showHudTemporarily()
+                    }
+                    1 -> {
+                        currentSceneTheme = SceneTheme.GHIBLI
+                        configManager.saveSceneMode(currentSceneTheme.id)
+                        applyVisualTheme()
+                        showHudTemporarily()
+                    }
+                    2 -> {
+                        currentSceneTheme = SceneTheme.KAWAII
+                        configManager.saveSceneMode(currentSceneTheme.id)
+                        applyVisualTheme()
+                        showHudTemporarily()
+                    }
+                    3 -> {
+                        currentSceneTheme = SceneTheme.KAWAII
+                        currentKawaiiPaletteIndex = (currentKawaiiPaletteIndex + 1) % KawaiiThemes.list.size
+                        configManager.saveSceneMode(currentSceneTheme.id)
+                        configManager.saveThemeIndex(currentKawaiiPaletteIndex)
+                        applyVisualTheme()
+                        showHudTemporarily()
+                    }
+                    4 -> activityScope.launch {
+                        currentPlaylistName = "Random Mix"
                         updateStatusBadge()
                         navidromeClient.loadAndPlayRandomSongs(50)
                     }
-                    1 -> showServerConfigDialog(isFirstRun = false)
+                    5 -> showServerConfigDialog(isFirstRun = false)
                     else -> activityScope.launch {
-                        val selected = playlists[which - 2]
+                        val selected = playlists[which - 6]
                         currentPlaylistName = selected.name
                         updateStatusBadge()
                         navidromeClient.loadAndPlayPlaylist(selected.id)
@@ -210,13 +256,13 @@ class MainActivity : Activity() {
             val pass = etPass.text.toString()
 
             if (url.isBlank() || user.isBlank() || pass.isBlank()) {
-                tvError.text = "⚠️ Completa todos los campos."
+                tvError.text = "⚠️ Please fill in all fields."
                 tvError.visibility = View.VISIBLE
                 return@setOnClickListener
             }
 
             btnSave.isEnabled = false
-            btnSave.text = "Conectando..."
+            btnSave.text = "Connecting..."
             tvError.visibility = View.GONE
 
             activityScope.launch {
@@ -228,8 +274,8 @@ class MainActivity : Activity() {
                     autoStartMusic()
                 } else {
                     btnSave.isEnabled = true
-                    btnSave.text = "Verificar y Conectar"
-                    tvError.text = "❌ No se pudo conectar. Verifica la URL, usuario y contraseña."
+                    btnSave.text = "Verify & Connect"
+                    tvError.text = "❌ Connection failed. Check URL, username, and password."
                     tvError.visibility = View.VISIBLE
                 }
             }
@@ -240,8 +286,12 @@ class MainActivity : Activity() {
     }
 
     private fun updateStatusBadge() {
-        val themeName = KawaiiThemes.list[currentThemeIndex].name
-        tvStatusBadge.text = "🎨 $themeName  •  🎵 $currentPlaylistName"
+        val label = if (currentSceneTheme == SceneTheme.KAWAII) {
+            "${currentSceneTheme.displayName} (${KawaiiThemes.list[currentKawaiiPaletteIndex].name})"
+        } else {
+            currentSceneTheme.displayName
+        }
+        tvStatusBadge.text = "🔥 $label  •  🎵 $currentPlaylistName"
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -284,11 +334,11 @@ class MainActivity : Activity() {
                 true
             }
             KeyEvent.KEYCODE_DPAD_UP -> {
-                cycleTheme()
+                cycleSceneTheme()
                 true
             }
             KeyEvent.KEYCODE_DPAD_DOWN -> {
-                showPlaylistSelectorDialog()
+                showMenuDialog()
                 true
             }
             else -> super.onKeyDown(keyCode, event)

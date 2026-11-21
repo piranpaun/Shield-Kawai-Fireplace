@@ -37,8 +37,9 @@ class KawaiiFireplaceDreamService : DreamService() {
     private lateinit var tvArtistName: TextView
     private lateinit var pbTrackProgress: ProgressBar
 
-    private var currentThemeIndex = 0
-    private var currentPlaylistName = "Modo Salvapantallas"
+    private var currentSceneTheme: SceneTheme = SceneTheme.REALISTIC
+    private var currentKawaiiPaletteIndex = 0
+    private var currentPlaylistName = "Screensaver"
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val hideHudRunnable = Runnable {
@@ -72,7 +73,9 @@ class KawaiiFireplaceDreamService : DreamService() {
         pbTrackProgress = findViewById(R.id.pbTrackProgress)
 
         configManager = ServerConfigManager(this)
-        currentThemeIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
+        val savedMode = configManager.getSceneMode()
+        currentSceneTheme = SceneTheme.entries.firstOrNull { it.id == savedMode } ?: SceneTheme.REALISTIC
+        currentKawaiiPaletteIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
 
         renderer = KawaiiFireplaceRenderer()
         glSurfaceView = findViewById<GLSurfaceView>(R.id.glSurfaceView).apply {
@@ -81,7 +84,7 @@ class KawaiiFireplaceDreamService : DreamService() {
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
 
-        applyTheme(KawaiiThemes.list[currentThemeIndex])
+        applyVisualTheme()
     }
 
     override fun onDreamingStarted() {
@@ -96,7 +99,7 @@ class KawaiiFireplaceDreamService : DreamService() {
                 username = creds.username,
                 password = creds.password,
                 onTrackChanged = { metadata ->
-                    tvTrackTitle.text = metadata.title ?: "Chimenea Kawaii"
+                    tvTrackTitle.text = metadata.title ?: "Cozy Fireplace"
                     tvArtistName.text = metadata.artist ?: "Navidrome"
                     ivCoverArt.load(metadata.artworkUri) {
                         crossfade(true)
@@ -119,15 +122,15 @@ class KawaiiFireplaceDreamService : DreamService() {
                     updateStatusBadge()
                     navidromeClient?.loadAndPlayPlaylist(targetList.id)
                 } else {
-                    currentPlaylistName = "Aleatorias"
+                    currentPlaylistName = "Random Mix"
                     updateStatusBadge()
                     navidromeClient?.loadAndPlayRandomSongs(50)
                 }
             }
             uiHandler.post(progressRunnable)
         } else {
-            tvTrackTitle.text = "Modo Chimenea Ambiental"
-            tvArtistName.text = "Configura Navidrome en la app principal"
+            tvTrackTitle.text = "Ambient Fireplace Mode"
+            tvArtistName.text = "Configure Navidrome in the main app"
             showHudTemporarily()
         }
     }
@@ -147,24 +150,27 @@ class KawaiiFireplaceDreamService : DreamService() {
         dreamScope.cancel()
     }
 
-    private fun applyTheme(theme: KawaiiTheme) {
-        renderer.currentTheme = theme
-        pbTrackProgress.progressTintList = ColorStateList.valueOf(theme.hudAccentHex)
-        tvStatusBadge.setTextColor(theme.hudAccentHex)
-        (hudContainer.background as? GradientDrawable)?.setStroke(4, theme.hudAccentHex)
+    private fun applyVisualTheme() {
+        renderer.sceneMode = currentSceneTheme
+        val kawaiiPalette = KawaiiThemes.list[currentKawaiiPaletteIndex]
+        renderer.currentTheme = kawaiiPalette
+        val accent = if (currentSceneTheme == SceneTheme.KAWAII) kawaiiPalette.hudAccentHex else currentSceneTheme.accentHex
+        pbTrackProgress.progressTintList = ColorStateList.valueOf(accent)
+        tvStatusBadge.setTextColor(accent)
+        (hudContainer.background as? GradientDrawable)?.setStroke(4, accent)
         updateStatusBadge()
     }
 
-    private fun cycleTheme() {
-        currentThemeIndex = (currentThemeIndex + 1) % KawaiiThemes.list.size
-        configManager.saveThemeIndex(currentThemeIndex)
-        applyTheme(KawaiiThemes.list[currentThemeIndex])
+    private fun cycleSceneTheme() {
+        val nextId = (currentSceneTheme.id + 1) % SceneTheme.entries.size
+        currentSceneTheme = SceneTheme.entries.first { it.id == nextId }
+        configManager.saveSceneMode(currentSceneTheme.id)
+        applyVisualTheme()
         showHudTemporarily()
     }
 
     private fun updateStatusBadge() {
-        val themeName = KawaiiThemes.list[currentThemeIndex].name
-        tvStatusBadge.text = "🌙 $themeName  •  🎵 $currentPlaylistName"
+        tvStatusBadge.text = "🌙 ${currentSceneTheme.displayName}  •  🎵 $currentPlaylistName"
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -203,7 +209,7 @@ class KawaiiFireplaceDreamService : DreamService() {
                     return true
                 }
                 KeyEvent.KEYCODE_DPAD_UP -> {
-                    cycleTheme()
+                    cycleSceneTheme()
                     return true
                 }
                 KeyEvent.KEYCODE_BACK,

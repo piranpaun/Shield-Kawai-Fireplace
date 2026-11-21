@@ -43,6 +43,12 @@ class ServerConfigManager(context: Context) {
         )
     }
 
+    fun saveSceneMode(mode: Int) {
+        prefs.edit().putInt("scene_mode", mode).apply()
+    }
+
+    fun getSceneMode(): Int = prefs.getInt("scene_mode", SceneTheme.REALISTIC.id)
+
     fun saveThemeIndex(index: Int) {
         prefs.edit().putInt("theme_index", index).apply()
     }
