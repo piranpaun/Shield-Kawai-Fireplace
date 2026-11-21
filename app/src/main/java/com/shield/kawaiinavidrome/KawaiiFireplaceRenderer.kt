@@ -1,5 +1,6 @@
 package com.shield.kawaiinavidrome
 
+import android.content.Context
 import android.opengl.GLES32
 import android.opengl.GLSurfaceView
 import java.nio.ByteBuffer
@@ -8,13 +9,21 @@ import java.nio.FloatBuffer
 import javax.microedition.khronos.egl.EGLConfig
 import javax.microedition.khronos.opengles.GL10
 
-class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
+class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Renderer {
     private var program = 0
     private var timeLocation = 0
     private var resolutionLocation = 0
     private var bassLocation = 0
     private var trebleLocation = 0
     private var sceneModeLocation = 0
+
+    private var woodTexLocation = 0
+    private var floorTexLocation = 0
+    private var mistletoeTexLocation = 0
+
+    private var woodTexId = 0
+    private var floorTexId = 0
+    private var mistletoeTexId = 0
 
     private var bgColLoc = 0
     private var brickColLoc = 0
@@ -48,6 +57,10 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
         uniform float uTreble;
         uniform float uSceneMode; // 0.0 = Kawaii, 1.0 = Realistic 3D, 2.0 = Studio Ghibli
 
+        uniform sampler2D uWoodTex;
+        uniform sampler2D uFloorTex;
+        uniform sampler2D uMistletoeTex;
+
         uniform vec3 uBgColor;
         uniform vec3 uBrickColor;
         uniform vec3 uFlameOuter;
@@ -64,6 +77,12 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             vec3 p3  = fract(vec3(p.xyx) * 0.1031);
             p3 += dot(p3, p3.yzx + 33.33);
             return fract((p3.x + p3.y) * p3.z);
+        }
+
+        vec2 hash22(vec2 p) {
+            vec3 p3 = fract(vec3(p.xyx) * vec3(0.1031, 0.1030, 0.0973));
+            p3 += dot(p3, p3.yzx + 33.33);
+            return fract((p3.xx + p3.yz) * p3.zy);
         }
 
         float noise(vec2 p) {
@@ -108,113 +127,135 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
         }
 
         // =========================================================================
+        // REALISTIC 3x3 VORONOI-JITTERED FALLING SNOW (ZERO BLOCK ARTIFACTS)
+        // =========================================================================
+        float sampleRealisticSnow(vec2 wp, float time) {
+            float snowAccum = 0.0;
+            for (float layer = 1.0; layer <= 3.0; layer += 1.0) {
+                float scale = 26.0 + layer * 18.0;
+                float fallSpeed = 0.34 / (0.65 + layer * 0.35);
+                float windDrift = 0.06 * sin(time * 0.35 + layer * 1.9);
+
+                // Strictly linear transform before floor() so grid cells never warp
+                vec2 uv = wp * scale + vec2(windDrift * scale, time * fallSpeed * scale);
+                vec2 cell = floor(uv);
+                vec2 local = fract(uv) - 0.5;
+
+                for (int dy = -1; dy <= 1; dy++) {
+                    for (int dx = -1; dx <= 1; dx++) {
+                        vec2 neighbor = vec2(float(dx), float(dy));
+                        vec2 id = cell + neighbor;
+                        vec2 rnd = hash22(id + vec2(layer * 41.3, layer * 19.7));
+
+                        // Only ~35% of cells spawn a snowflake for natural spacing
+                        if (rnd.x > 0.35) continue;
+
+                        float sway = sin(time * (1.4 + rnd.y * 1.6) + rnd.x * 25.0) * 0.24;
+                        vec2 flakeCenter = neighbor + (rnd - 0.5) * 0.65 + vec2(sway, 0.0);
+                        float d = length(local - flakeCenter);
+
+                        float radius = mix(0.06, 0.19, fract(rnd.y * 7.13)) / (0.7 + layer * 0.35);
+                        float softness = radius * (0.45 + 0.35 * layer);
+                        float flake = smoothstep(radius + softness, radius * 0.15, d);
+                        snowAccum += flake * (0.85 / (0.6 + layer * 0.4));
+                    }
+                }
+            }
+            return clamp(snowAccum, 0.0, 1.0);
+        }
+
+        // =========================================================================
         // 5x7 STITCHED GLYPH RENDERER FOR STOCKING NAMES:
         // 0: Papa | 1: Mama | 2: Eva | 3: Carmelo | 4: Ginger
         // =========================================================================
         int getGlyphRow(int ch, int row) {
-            // 'P' (80)
-            if (ch == 80) {
+            if (ch == 80) { // 'P'
                 if (row == 0 || row == 3) return 30;
                 if (row == 1 || row == 2) return 17;
                 return 16;
             }
-            // 'a' (97)
-            if (ch == 97) {
+            if (ch == 97) { // 'a'
                 if (row == 2) return 14;
                 if (row == 3) return 1;
                 if (row == 4 || row == 6) return 15;
                 if (row == 5) return 17;
                 return 0;
             }
-            // 'p' (112)
-            if (ch == 112) {
+            if (ch == 112) { // 'p'
                 if (row == 2 || row == 4) return 30;
                 if (row == 3) return 17;
                 if (row == 5 || row == 6) return 16;
                 return 0;
             }
-            // 'M' (77)
-            if (ch == 77) {
+            if (ch == 77) { // 'M'
                 if (row == 1) return 27;
                 if (row == 2 || row == 3) return 21;
                 return 17;
             }
-            // 'm' (109)
-            if (ch == 109) {
+            if (ch == 109) { // 'm'
                 if (row == 2) return 26;
                 if (row >= 3) return 21;
                 return 0;
             }
-            // 'E' (69)
-            if (ch == 69) {
+            if (ch == 69) { // 'E'
                 if (row == 0 || row == 6) return 31;
                 if (row == 3) return 30;
                 return 16;
             }
-            // 'v' (118)
-            if (ch == 118) {
+            if (ch == 118) { // 'v'
                 if (row >= 2 && row <= 4) return 17;
                 if (row == 5) return 10;
                 if (row == 6) return 4;
                 return 0;
             }
-            // 'C' (67)
-            if (ch == 67) {
+            if (ch == 67) { // 'C'
                 if (row == 0 || row == 6) return 14;
                 if (row == 1 || row == 5) return 17;
                 return 16;
             }
-            // 'r' (114)
-            if (ch == 114) {
+            if (ch == 114) { // 'r'
                 if (row == 2) return 22;
                 if (row == 3) return 25;
                 if (row >= 4) return 16;
                 return 0;
             }
-            // 'e' (101)
-            if (ch == 101) {
+            if (ch == 101) { // 'e'
                 if (row == 2 || row == 6) return 14;
                 if (row == 3) return 17;
                 if (row == 4) return 31;
                 if (row == 5) return 16;
                 return 0;
             }
-            // 'l' (108)
-            if (ch == 108) {
+            if (ch == 108) { // 'l'
                 if (row == 0) return 12;
                 if (row == 6) return 14;
                 return 4;
             }
-            // 'o' (111)
-            if (ch == 111) {
+            if (ch == 111) { // 'o'
                 if (row == 2 || row == 6) return 14;
                 if (row >= 3 && row <= 5) return 17;
                 return 0;
             }
-            // 'G' (71)
-            if (ch == 71) {
+            if (ch == 71) { // 'G'
                 if (row == 0 || row == 6) return 14;
                 if (row == 1 || row == 4 || row == 5) return 17;
                 if (row == 2) return 16;
                 return 23;
             }
-            // 'i' (105)
-            if (ch == 105) {
+            if (ch == 105) { // 'i'
                 if (row == 0) return 4;
                 if (row == 1) return 0;
                 if (row == 2) return 12;
                 if (row == 6) return 14;
                 return 4;
             }
-            // 'n' (110)
-            if (ch == 110) {
+            if (ch == 110) { // 'n'
                 if (row == 2) return 22;
                 if (row == 3) return 25;
                 if (row >= 4) return 17;
                 return 0;
             }
-            // 'g' (103)
-            if (ch == 103) {
+            if (ch == 103) { // 'g'
                 if (row == 2 || row == 4) return 15;
                 if (row == 3) return 17;
                 if (row == 5) return 1;
@@ -233,14 +274,14 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             float charAspect = 0.72;
             float spacing = 1.22;
             float totalW = float(len) * spacing - 0.22;
-            // Scale text cleanly inside cuff bounds (halfW = 0.095, halfH = 0.023)
-            float scaleY = 0.029;
-            float scaleX = min(scaleY * charAspect, 0.168 / totalW);
+            // Scaled for the 50% larger cuff (halfW = 0.118, halfH = 0.036)
+            float scaleY = 0.044;
+            float scaleX = min(scaleY * charAspect, 0.212 / totalW);
             scaleY = scaleX / charAspect;
 
             vec2 p = localUv / vec2(scaleX, scaleY);
             p.x += totalW * 0.5;
-            p.y = 0.5 - p.y; // 0 at top, 1 at bottom
+            p.y = 0.5 - p.y;
 
             if (p.x < 0.0 || p.x > totalW || p.y < 0.0 || p.y > 1.0) return 0.0;
 
@@ -287,28 +328,25 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             int bit = (bits >> (4 - gx)) & 1;
             if (bit == 0) return 0.0;
 
-            // Soft stitched thread rounding per dot
             vec2 cellF = fract(grid) - 0.5;
-            return smoothstep(0.62, 0.25, length(cellF));
+            return smoothstep(0.64, 0.22, length(cellF));
         }
 
         // =========================================================================
-        // THEME 1 & 2: REALISTIC 3D & STUDIO GHIBLI COZY FIREPLACE (3/4 SCREEN FIRE)
+        // THEME 1 & 2: REALISTIC 3D & STUDIO GHIBLI COZY FIREPLACE
         // =========================================================================
         vec3 blackbodyFlame(float temp, bool isGhibli) {
             if (isGhibli) {
-                // Studio Ghibli vibrant cel-shaded & painted fire palette
-                vec3 c1 = vec3(0.86, 0.16, 0.12); // Deep vermilion
-                vec3 c2 = vec3(0.98, 0.45, 0.12); // Warm tangerine
-                vec3 c3 = vec3(1.00, 0.80, 0.22); // Golden butter
-                vec3 c4 = vec3(1.00, 0.97, 0.82); // Luminous cream
+                vec3 c1 = vec3(0.86, 0.16, 0.12);
+                vec3 c2 = vec3(0.98, 0.45, 0.12);
+                vec3 c3 = vec3(1.00, 0.80, 0.22);
+                vec3 c4 = vec3(1.00, 0.97, 0.82);
                 float stepped = mix(temp, floor(temp * 4.5) / 4.5, 0.55);
                 vec3 col = mix(c1, c2, smoothstep(0.15, 0.42, stepped));
                 col = mix(col, c3, smoothstep(0.42, 0.72, stepped));
                 col = mix(col, c4, smoothstep(0.72, 0.95, stepped));
                 return col;
             } else {
-                // Realistic physical fire temperature gradient
                 vec3 c1 = vec3(0.65, 0.08, 0.01);
                 vec3 c2 = vec3(0.98, 0.32, 0.03);
                 vec3 c3 = vec3(1.00, 0.72, 0.20);
@@ -321,78 +359,66 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
         }
 
         vec3 renderRealisticOrGhibli(vec2 uv, bool isGhibli) {
-            // Subtle painterly brush warp for Studio Ghibli
             vec2 p = uv;
             if (isGhibli) {
                 vec2 brush = vec2(fbm(uv * 14.0), fbm(uv * 14.0 + 9.2)) - 0.5;
                 p += brush * 0.0045;
             }
 
-            // Flickering fire intensity driven by time + bass
             float flicker = 0.88 + 0.12 * sin(uTime * 11.3) * cos(uTime * 7.1) + uBass * 0.45;
             vec3 fireLightColor = isGhibli ? vec3(1.0, 0.58, 0.22) : vec3(1.0, 0.48, 0.14);
 
             // -----------------------------------------------------------------
-            // A. MINIMALIST COZY ROOM WALL & WOOD PANELING
+            // A. MINIMALIST COZY ROOM WALL
             // -----------------------------------------------------------------
-            float wallWoodGrain = fbm(vec2(p.x * 22.0, p.y * 2.5));
-            vec3 baseWall = isGhibli
-                ? vec3(0.16, 0.13, 0.18) + wallWoodGrain * 0.04
-                : vec3(0.10, 0.08, 0.07) + wallWoodGrain * 0.025;
-
+            vec3 baseWall = isGhibli ? vec3(0.16, 0.13, 0.18) : vec3(0.10, 0.08, 0.07);
             float distToHearth = length((p - vec2(0.0, -0.10)) * vec2(0.75, 1.0));
             float roomGlow = exp(-distToHearth * 1.9) * flicker;
             vec3 col = baseWall + fireLightColor * roomGlow * (isGhibli ? 0.38 : 0.30);
 
             // -----------------------------------------------------------------
-            // B. LEFT WINDOW: SNOWING OUTSIDE INTO SERENE NIGHT
+            // B. LEFT WINDOW: REALISTIC FINE SNOWFALL INTO NIGHT SKY
             // -----------------------------------------------------------------
-            vec2 winCenter = vec2(-0.73, 0.04);
-            float winFrameOuter = sdBox2D(p - winCenter, vec2(0.135, 0.34), 0.008);
-            float winGlass = sdBox2D(p - winCenter, vec2(0.112, 0.315), 0.004);
+            vec2 winCenter = vec2(-0.74, 0.03);
+            float winFrameOuter = sdBox2D(p - winCenter, vec2(0.145, 0.35), 0.008);
+            float winGlass = sdBox2D(p - winCenter, vec2(0.122, 0.325), 0.004);
 
             if (winFrameOuter < 0.004) {
-                // Night sky & distant snowy hills/pines
                 vec2 wp = p - winCenter;
                 vec3 nightSky = isGhibli
-                    ? mix(vec3(0.08, 0.16, 0.34), vec3(0.03, 0.07, 0.18), smoothstep(-0.3, 0.3, wp.y))
-                    : mix(vec3(0.04, 0.07, 0.14), vec3(0.01, 0.02, 0.06), smoothstep(-0.3, 0.3, wp.y));
+                    ? mix(vec3(0.08, 0.16, 0.34), vec3(0.02, 0.06, 0.16), smoothstep(-0.32, 0.32, wp.y))
+                    : mix(vec3(0.04, 0.07, 0.15), vec3(0.01, 0.02, 0.06), smoothstep(-0.32, 0.32, wp.y));
 
-                // Soft moonlit snow hill at bottom of window
-                float hill = wp.y - (-0.23 + 0.025 * sin(wp.x * 14.0 + 1.0));
-                if (hill < 0.0) {
-                    nightSky = isGhibli ? vec3(0.58, 0.68, 0.85) : vec3(0.45, 0.52, 0.64);
+                // Distant snowy pine ridge outside window
+                float ridge = wp.y - (-0.23 + 0.022 * sin(wp.x * 16.0 + 0.8));
+                if (ridge < 0.0) {
+                    nightSky = isGhibli ? vec3(0.55, 0.66, 0.84) : vec3(0.42, 0.50, 0.62);
                 }
 
-                // Multi-depth falling snow outside
-                for (float layer = 1.0; layer <= 3.0; layer += 1.0) {
-                    vec2 sUv = wp * (9.0 + layer * 6.0);
-                    sUv.y += uTime * (0.42 / layer);
-                    sUv.x += sin(uTime * 0.5 + layer * 1.7 + wp.y * 4.0) * 0.25;
-                    vec2 sId = floor(sUv);
-                    vec2 sF = fract(sUv) - 0.5;
-                    vec2 jitter = (vec2(hash12(sId), hash12(sId + 31.4)) - 0.5) * 0.55;
-                    float dFlake = length(sF - jitter);
-                    float rFlake = (0.11 / layer) * step(0.62, hash12(sId + 73.1));
-                    float alphaFlake = smoothstep(rFlake, rFlake * 0.2, dFlake) * (0.95 / layer);
-                    nightSky = mix(nightSky, vec3(0.92, 0.96, 1.0), alphaFlake);
-                }
+                // Multi-depth realistic Voronoi-jittered falling snowflakes (no blocks)
+                float snowMask = sampleRealisticSnow(wp, uTime);
+                nightSky = mix(nightSky, vec3(0.95, 0.98, 1.0), snowMask * 0.92);
 
-                // Subtle warm fire reflection on glass & snow on mullions
-                nightSky += fireLightColor * 0.06 * smoothstep(0.15, -0.15, wp.x);
+                // Subtle snow accumulation along bottom sill & center crossbar
+                float lowerSillSnow = smoothstep(-0.295, -0.32, wp.y);
+                float midBarSnow = smoothstep(0.024, 0.009, abs(wp.y - 0.012)) * step(0.008, wp.y);
+                nightSky = mix(nightSky, vec3(0.84, 0.90, 0.98), clamp(lowerSillSnow * 0.85 + midBarSnow * 0.75, 0.0, 1.0));
 
-                // Minimalist dark walnut window frame + crossbars
-                float mullion = min(abs(wp.x) - 0.011, abs(wp.y) - 0.011);
+                // Warm firelight reflection on interior glass
+                nightSky += fireLightColor * 0.05 * smoothstep(0.15, -0.15, wp.x);
+
+                // Window wood frame & crossbars sampled from uWoodTex
+                float mullion = min(abs(wp.x) - 0.010, abs(wp.y) - 0.010);
                 float isWood = max(-winGlass, -mullion);
-                float wGrain = fbm(vec2(wp.x * 12.0, wp.y * 45.0));
-                vec3 walnutFrame = (isGhibli ? vec3(0.26, 0.15, 0.11) : vec3(0.16, 0.09, 0.06)) * (0.85 + 0.3 * wGrain);
-                walnutFrame += fireLightColor * 0.14 * smoothstep(0.15, -0.15, wp.x) * flicker;
+                vec2 frameUv = fract(wp * vec2(2.0, 1.2) + vec2(0.3, 0.4));
+                vec3 frameWood = texture(uWoodTex, frameUv).rgb * (isGhibli ? 1.35 : 0.95);
+                frameWood += fireLightColor * 0.16 * smoothstep(0.15, -0.15, wp.x) * flicker;
 
-                // Minimalist wooden windowsill at bottom
-                float sill = sdBox2D(wp - vec2(0.0, -0.345), vec2(0.155, 0.018), 0.005);
-                vec3 winOut = mix(walnutFrame, nightSky, smoothstep(-0.003, 0.003, isWood));
+                float sill = sdBox2D(wp - vec2(0.0, -0.355), vec2(0.165, 0.018), 0.005);
+                vec3 winOut = mix(frameWood, nightSky, smoothstep(-0.003, 0.003, isWood));
                 if (sill < 0.003) {
-                    winOut = mix(winOut, walnutFrame * 1.15, smoothstep(0.003, -0.003, sill));
+                    vec3 sillWood = texture(uWoodTex, fract(wp * vec2(2.5, 4.0))).rgb * (isGhibli ? 1.4 : 1.05);
+                    winOut = mix(winOut, sillWood, smoothstep(0.003, -0.003, sill));
                 }
                 col = mix(col, winOut, smoothstep(0.004, -0.004, min(winFrameOuter, sill)));
             }
@@ -403,7 +429,6 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             vec2 treeOrigin = vec2(0.84, -0.48);
             vec2 tp = p - treeOrigin;
             if (p.x > 0.52) {
-                // Soft out-of-focus conical pine silhouette
                 float treeH = clamp(tp.y / 0.96, 0.0, 1.0);
                 float branchWave = sin(tp.y * 36.0) * 0.035 + fbm(tp * 9.0) * 0.045;
                 float treeWidth = (1.0 - treeH * 0.88) * 0.34 + branchWave;
@@ -414,12 +439,10 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                     vec3 pineDark = isGhibli ? vec3(0.06, 0.22, 0.14) : vec3(0.03, 0.11, 0.06);
                     vec3 pineLit  = isGhibli ? vec3(0.15, 0.38, 0.22) : vec3(0.08, 0.22, 0.11);
                     vec3 treeCol = mix(pineDark, pineLit, depthNoise);
-                    // Warm firelight rim on left edge of tree
                     treeCol += fireLightColor * 0.22 * smoothstep(0.82, 0.54, p.x) * flicker;
                     col = mix(col, treeCol, treeMask * 0.92);
                 }
 
-                // Out-of-focus glowing Christmas ornaments & fairy lights (Optical Bokeh)
                 for (float b = 0.0; b < 14.0; b += 1.0) {
                     float s1 = hash12(vec2(b * 13.7, 4.1));
                     float s2 = hash12(vec2(b * 29.3, 8.7));
@@ -429,7 +452,6 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                     vec2 bPos = vec2(bx, by);
                     float dBokeh = length(p - bPos);
 
-                    // Large soft out-of-focus bokeh circle with bright optical rim
                     bool isGold = mod(b, 3.0) < 1.5;
                     float bokehRadius = isGold ? (0.024 + 0.006 * uTreble) : 0.034;
                     if (dBokeh < bokehRadius * 1.4) {
@@ -438,7 +460,6 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                             ? vec3(1.0, 0.82, 0.38)
                             : (mod(b, 2.0) < 0.5 ? vec3(0.95, 0.22, 0.25) : vec3(0.96, 0.72, 0.32));
 
-                        // Soft optical bokeh profile (bright ring + creamy interior + wide halo)
                         float disc = smoothstep(bokehRadius, bokehRadius * 0.72, dBokeh);
                         float ring = smoothstep(bokehRadius * 0.45, bokehRadius * 0.92, dBokeh) * disc;
                         float halo = exp(-dBokeh * 42.0) * 0.55;
@@ -449,61 +470,57 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             }
 
             // -----------------------------------------------------------------
-            // D. MINIMALISTIC ARCHITECTURAL HEARTH & WOODEN FLOOR / FURNITURE
+            // D. WOOD FLOOR SAMPLED FROM IMAGE TEXTURE (uFloorTex) IN 3D PERSPECTIVE
             // -----------------------------------------------------------------
-            // Clean dark walnut wood floor at bottom
             if (p.y < -0.39) {
-                float plank = fract(p.x * 3.5 + floor((p.y + 0.45) * 18.0) * 0.37);
-                float plankSeam = smoothstep(0.0, 0.015, plank) * smoothstep(1.0, 0.985, plank);
-                float fGrain = fbm(vec2(p.x * 35.0, p.y * 8.0));
-                vec3 woodFloor = (isGhibli ? vec3(0.24, 0.14, 0.09) : vec3(0.13, 0.07, 0.04)) * (0.75 + 0.4 * fGrain) * (0.6 + 0.4 * plankSeam);
-                float floorRefl = exp(-length(vec2(p.x * 0.9, (p.y + 0.42) * 3.0)) * 2.6) * flicker;
-                woodFloor += fireLightColor * floorRefl * 0.65;
+                float depth = max(0.08, -0.34 - p.y);
+                float perspZ = 0.28 / depth;
+                vec2 floorUv = vec2(p.x * perspZ * 0.55 + 0.5, perspZ * 0.42);
+                vec3 texFloor = texture(uFloorTex, floorUv).rgb;
+                if (isGhibli) texFloor *= 1.35;
+
+                // Soft ambient occlusion near the hearth base + warm firelight reflection
+                float hearthShadow = smoothstep(-0.39, -0.45, p.y);
+                float floorRefl = exp(-length(vec2(p.x * 0.9, (p.y + 0.42) * 3.0)) * 2.5) * flicker;
+                vec3 woodFloor = texFloor * (0.55 + 0.45 * hearthShadow) + fireLightColor * floorRefl * 0.58;
                 col = woodFloor;
             }
 
-            // Minimalistic low wooden side console on far left (subtle, uncluttered)
+            // Minimalist side console on left using uWoodTex
             float sideTable = sdBox2D(p - vec2(-0.75, -0.35), vec2(0.13, 0.065), 0.008);
             if (sideTable < 0.003) {
-                float tGrain = fbm(vec2(p.x * 40.0, p.y * 12.0));
-                vec3 tableCol = (isGhibli ? vec3(0.32, 0.18, 0.11) : vec3(0.18, 0.10, 0.06)) * (0.8 + 0.35 * tGrain);
+                vec2 tblUv = fract((p - vec2(-0.75, -0.35)) * vec2(2.8, 4.5) + 0.5);
+                vec3 tableCol = texture(uWoodTex, tblUv).rgb * (isGhibli ? 1.35 : 0.95);
                 tableCol += fireLightColor * 0.22 * smoothstep(-0.88, -0.62, p.x) * flicker;
                 col = mix(col, tableCol, smoothstep(0.003, -0.003, sideTable));
             }
 
-            // Grand Minimalist Fireplace Surround (Honed dark stone/slate, clean proportions)
-            // Outer hearth frame: spans x in [-0.57, 0.57], y in [-0.41, 0.26]
-            float outerHearth = sdBox2D(p - vec2(0.0, -0.075), vec2(0.57, 0.335), 0.014);
-            // Firebox opening: 3/4 visual dominance! x in [-0.50, 0.50], y in [-0.38, 0.17]
-            float firebox = sdBox2D(p - vec2(0.0, -0.105), vec2(0.50, 0.275), 0.012);
+            // -----------------------------------------------------------------
+            // E. MINIMALISTIC ARCHITECTURAL HEARTH & 3/4 ROARING FIREBOX
+            // -----------------------------------------------------------------
+            float outerHearth = sdBox2D(p - vec2(0.0, -0.075), vec2(0.58, 0.335), 0.014);
+            float firebox = sdBox2D(p - vec2(0.0, -0.105), vec2(0.51, 0.275), 0.012);
 
             if (outerHearth < 0.004) {
                 float stoneTex = fbm(p * 28.0);
                 vec3 slateBase = isGhibli
                     ? vec3(0.24, 0.22, 0.25) + stoneTex * 0.05
                     : vec3(0.14, 0.13, 0.14) + stoneTex * 0.035;
-                // Inner bevel highlight catching the firelight
                 float innerRim = smoothstep(0.045, 0.0, firebox);
                 slateBase += fireLightColor * innerRim * 0.55 * flicker;
                 col = mix(col, slateBase, smoothstep(0.004, -0.004, outerHearth));
             }
 
-            // -----------------------------------------------------------------
-            // E. INTERIOR OF FIREBOX: 3D RAYMARCHED LOGS, EMBERS & 3/4 ROARING FIRE
-            // -----------------------------------------------------------------
             if (firebox < 0.003) {
-                // Dark soot-lined brick backwall inside the firebox
                 vec2 bUv = p * vec2(7.0, 15.0);
                 bUv.x += mod(floor(bUv.y), 2.0) * 0.5;
                 vec2 bF = fract(bUv) - 0.5;
                 float bMask = smoothstep(0.48, 0.42, abs(bF.x)) * smoothstep(0.46, 0.38, abs(bF.y));
                 vec3 backWall = (isGhibli ? vec3(0.11, 0.07, 0.08) : vec3(0.04, 0.03, 0.03)) * (0.5 + 0.5 * bMask);
 
-                // Warm glow on the back of the firebox
                 float backGlow = exp(-length((p - vec2(0.0, -0.14)) * vec2(1.1, 1.4)) * 2.4) * flicker;
                 vec3 boxCol = backWall + fireLightColor * backGlow * (isGhibli ? 0.85 : 0.72);
 
-                // Glowing ember bed across the bottom of the firebox
                 if (p.y < -0.27) {
                     float emberY = smoothstep(-0.27, -0.36, p.y);
                     float coals = fbm(vec2(p.x * 26.0, p.y * 45.0) + vec2(0.0, uTime * 0.15));
@@ -512,9 +529,8 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                     boxCol = mix(boxCol, coalCol, smoothstep(-0.27, -0.29, p.y));
                 }
 
-                // 3D Cylindrical Firewood Logs stacked in the center
+                // 3D Cylindrical Firewood Logs
                 for (int i = 0; i < 3; i++) {
-                    float fi = float(i);
                     vec2 logPos = (i == 0) ? vec2(-0.14, -0.31)
                                 : (i == 1) ? vec2( 0.14, -0.31)
                                            : vec2( 0.00, -0.255);
@@ -531,7 +547,6 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                         float barkNoise = fbm(vec2(rlp.x * 28.0, rlp.y * 55.0));
                         vec3 bark = (isGhibli ? vec3(0.24, 0.13, 0.09) : vec3(0.12, 0.06, 0.04)) * (0.35 + 0.65 * cylZ) * (0.7 + 0.5 * barkNoise);
 
-                        // Glowing charred cracks on the underside/center facing the fire
                         float charZone = smoothstep(0.02, -0.035, rlp.y) * smoothstep(halfLen, halfLen * 0.3, abs(rlp.x));
                         float emberCrack = smoothstep(0.52, 0.78, barkNoise) * charZone;
                         bark += blackbodyFlame(0.45 + 0.45 * emberCrack + uBass * 0.2, isGhibli) * emberCrack * 1.4;
@@ -540,20 +555,17 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                     }
                 }
 
-                // ROARING VOLUMETRIC FIRE (fills the 3/4 firebox with rich, organic tongues)
-                vec2 fUv = (p - vec2(0.0, -0.34)) / vec2(0.44, 0.48 + uBass * 0.08);
+                // 3/4 Volumetric Roaring Fire
+                vec2 fUv = (p - vec2(0.0, -0.34)) / vec2(0.45, 0.48 + uBass * 0.08);
                 if (fUv.y > -0.05 && fUv.y < 1.15 && abs(fUv.x) < 1.15) {
                     float yH = clamp(fUv.y, 0.0, 1.0);
-                    // Domain-warped upward turbulent flow
                     vec2 flow1 = vec2(fUv.x * 3.2, fUv.y * 2.4 - uTime * 2.6);
                     vec2 flow2 = vec2(fUv.x * 6.5 + 4.1, fUv.y * 5.0 - uTime * 4.2);
                     float turb = (fbm(flow1) - 0.5) * 0.55 + (fbm(flow2) - 0.5) * 0.25;
 
-                    // Taper into lively flame tongues toward the top
                     float lateralSpread = (1.0 - pow(yH, 1.35) * 0.78);
                     float warpedX = (fUv.x + turb * (0.25 + yH * 0.95)) / max(lateralSpread, 0.14);
 
-                    // Multi-tongue density field
                     float tongues = sin(warpedX * 5.5 + fbm(flow1 * 1.5) * 4.0) * 0.22 * yH;
                     float coreDist = length(vec2(warpedX * 1.05, max(0.0, yH - 0.18) * 1.15));
                     float density = (1.0 - coreDist + tongues + (fbm(flow2) - 0.45) * 0.45) * smoothstep(1.05, 0.12, yH);
@@ -565,13 +577,11 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                         float alpha = isGhibli
                             ? smoothstep(0.04, 0.22, density)
                             : smoothstep(0.02, 0.38, density);
-                        // Additive + alpha blend for luminous fire
                         boxCol = mix(boxCol, fCol, clamp(alpha, 0.0, 1.0));
                         boxCol += fCol * alpha * 0.28;
                     }
                 }
 
-                // Rising glowing sparks & embers inside the firebox
                 for (float k = 1.0; k <= 16.0; k += 1.0) {
                     float sd = hash12(vec2(k * 51.7, 11.3));
                     float life = fract(uTime * (0.25 + sd * 0.22) + sd);
@@ -591,109 +601,171 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             }
 
             // -----------------------------------------------------------------
-            // F. SOLID WALNUT WOOD MANTEL BEAM (TOP OF FIREPLACE)
+            // F. FIREPLACE WOOD MANTEL SAMPLED FROM IMAGE TEXTURE (uWoodTex)
             // -----------------------------------------------------------------
             vec2 mantelCenter = vec2(0.0, 0.255);
-            float mantelSdf = sdBox2D(p - mantelCenter, vec2(0.64, 0.032), 0.008);
+            float mantelSdf = sdBox2D(p - mantelCenter, vec2(0.68, 0.035), 0.008);
             if (mantelSdf < 0.015) {
-                // Subtle drop shadow cast onto the stone below the mantel
                 float underShadow = smoothstep(0.015, 0.0, mantelSdf) * step(p.y, mantelCenter.y);
                 col *= (1.0 - underShadow * 0.45);
             }
             if (mantelSdf < 0.003) {
-                float mGrain = fbm(vec2(p.x * 16.0, p.y * 95.0));
-                float bevelY = clamp((p.y - (mantelCenter.y - 0.032)) / 0.064, 0.0, 1.0);
-                vec3 walnut = (isGhibli ? vec3(0.36, 0.20, 0.12) : vec3(0.22, 0.12, 0.07)) * (0.75 + 0.45 * mGrain);
-                // Warm firelight reflecting off the bottom bevel of the wooden mantel
-                walnut += fireLightColor * (1.0 - bevelY) * 0.45 * flicker;
-                // Soft top highlight
-                walnut += vec3(0.08, 0.07, 0.06) * smoothstep(0.75, 1.0, bevelY);
+                vec2 mantelUv = vec2(
+                    (p.x - (mantelCenter.x - 0.68)) / 1.36,
+                    1.0 - (p.y - (mantelCenter.y - 0.035)) / 0.070
+                );
+                vec3 walnut = texture(uWoodTex, mantelUv).rgb * (isGhibli ? 1.45 : 1.12);
+                float bevelY = clamp((p.y - (mantelCenter.y - 0.035)) / 0.070, 0.0, 1.0);
+                // Warm firelight reflecting off lower edge of wooden mantel
+                walnut += fireLightColor * (1.0 - bevelY) * 0.42 * flicker;
+                walnut += vec3(0.07, 0.06, 0.05) * smoothstep(0.78, 1.0, bevelY);
                 col = mix(col, walnut, smoothstep(0.003, -0.003, mantelSdf));
             }
 
             // -----------------------------------------------------------------
-            // G. 5 HANGING STOCKINGS: PAPA, MAMA, EVA, CARMELO, GINGER
+            // G. MISTLETOE GARLAND ABOVE FIREPLACE FROM IMAGE TEXTURE (uMistletoeTex)
+            // -----------------------------------------------------------------
+            vec2 mistleBoxMin = vec2(-0.62, 0.245);
+            vec2 mistleBoxMax = vec2( 0.62, 0.465);
+            if (p.x >= mistleBoxMin.x && p.x <= mistleBoxMax.x &&
+                p.y >= mistleBoxMin.y && p.y <= mistleBoxMax.y) {
+                vec2 mUv = vec2(
+                    (p.x - mistleBoxMin.x) / (mistleBoxMax.x - mistleBoxMin.x),
+                    1.0 - (p.y - mistleBoxMin.y) / (mistleBoxMax.y - mistleBoxMin.y)
+                );
+                vec4 mTex = texture(uMistletoeTex, mUv);
+                vec3 mLit = mTex.rgb * (isGhibli ? 1.15 : 0.95) + fireLightColor * 0.14 * flicker * mTex.a;
+                col = mix(col, mLit, mTex.a);
+            }
+
+            // -----------------------------------------------------------------
+            // H. 5 HANGING STOCKINGS (+50% LARGER & HIGHLY DETAILED):
+            //    PAPA, MAMA, EVA, CARMELO, GINGER
             // -----------------------------------------------------------------
             for (int s = 0; s < 5; s++) {
                 float fs = float(s);
-                float anchorX = -0.48 + fs * 0.24;
+                float anchorX = -0.54 + fs * 0.27;
                 vec2 anchor = vec2(anchorX, 0.232);
                 vec2 sp = p - anchor;
 
-                // Gentle swaying motion from warm fireplace convection + music bass
-                float swayAngle = sin(uTime * 1.8 + fs * 1.35) * (0.032 + uBass * 0.025);
+                float swayAngle = sin(uTime * 1.7 + fs * 1.35) * (0.026 + uBass * 0.020);
                 float ca = cos(swayAngle), sa = sin(swayAngle);
                 sp = mat2(ca, -sa, sa, ca) * sp;
 
-                // Stocking geometry: cuff at top, knitted leg, angled foot
-                float cuffSdf = sdBox2D(sp - vec2(0.0, -0.024), vec2(0.095, 0.023), 0.007);
-                float legSdf  = sdBox2D(sp - vec2(0.0, -0.078), vec2(0.044, 0.042), 0.016);
-                vec2 footP = sp - vec2(0.022, -0.118);
-                float footSdf = sdBox2D(footP, vec2(0.062, 0.025), 0.022);
-                float bodySdf = smin(legSdf, footSdf, 0.012);
+                // +50% larger geometry
+                float cuffSdf = sdBox2D(sp - vec2(0.0, -0.042), vec2(0.118, 0.036), 0.010);
+                float legSdf  = sdBox2D(sp - vec2(0.0, -0.125), vec2(0.066, 0.065), 0.024);
+                vec2 footP = sp - vec2(0.034, -0.188);
+                float footSdf = sdBox2D(footP, vec2(0.094, 0.038), 0.033);
+                float bodySdf = smin(legSdf, footSdf, 0.018);
 
-                // Small brass hanger loop above cuff
-                float hookSdf = abs(length(sp - vec2(0.0, 0.004)) - 0.009) - 0.0025;
+                // Brass hook & braided hanging loop
+                float hookSdf = abs(length(sp - vec2(0.0, -0.002)) - 0.013) - 0.0035;
                 if (hookSdf < 0.002) {
-                    col = mix(col, vec3(0.85, 0.68, 0.28), smoothstep(0.002, -0.002, hookSdf));
+                    col = mix(col, vec3(0.90, 0.72, 0.28), smoothstep(0.002, -0.002, hookSdf));
                 }
 
-                // Soft shadow behind stocking
+                // Soft drop shadow behind stocking
                 float sockShadow = min(cuffSdf, bodySdf);
-                if (sockShadow < 0.012) {
-                    col *= (1.0 - smoothstep(0.012, 0.0, sockShadow) * 0.35);
+                if (sockShadow < 0.016) {
+                    col *= (1.0 - smoothstep(0.016, 0.0, sockShadow) * 0.38);
                 }
 
-                // Knitted stocking body
+                // Detailed Knitted Stocking Body
                 if (bodySdf < 0.003) {
-                    // Elegant, harmonious Christmas colors for each family member
-                    vec3 sockCol = vec3(0.62, 0.12, 0.15); // Papa: Deep Burgundy
-                    if (s == 1) sockCol = vec3(0.14, 0.36, 0.22); // Mama: Forest Pine
-                    else if (s == 2) sockCol = vec3(0.72, 0.22, 0.24); // Eva: Cranberry Red
-                    else if (s == 3) sockCol = vec3(0.18, 0.28, 0.42); // Carmelo: Winter Slate Blue
-                    else if (s == 4) sockCol = vec3(0.68, 0.34, 0.14); // Ginger: Warm Cinnamon
-
-                    if (isGhibli) sockCol *= 1.18;
-
-                    // Subtle cable-knit ribbing + warm firelight from below
-                    float knit = sin(sp.x * 190.0) * sin(sp.y * 190.0) * 0.08;
-                    float round3D = sqrt(clamp(1.0 - pow(sp.x / 0.065, 2.0), 0.15, 1.0));
-                    vec3 litSock = sockCol * (0.58 + 0.42 * round3D + knit);
-                    litSock += fireLightColor * smoothstep(-0.04, -0.14, sp.y) * 0.38 * flicker;
-
-                    // Cream heel & toe accents
-                    float heel = length(sp - vec2(-0.036, -0.112)) - 0.024;
-                    float toe  = length(sp - vec2(0.064, -0.118)) - 0.025;
-                    if (min(heel, toe) < 0.0) {
-                        litSock = mix(litSock, vec3(0.88, 0.84, 0.78) * (0.65 + 0.35 * round3D), 0.85);
+                    vec3 sockCol = vec3(0.64, 0.11, 0.15);      // Papa: Deep Burgundy
+                    vec3 trimBand = vec3(0.16, 0.42, 0.22);
+                    if (s == 1) {
+                        sockCol = vec3(0.13, 0.38, 0.22);       // Mama: Forest Pine
+                        trimBand = vec3(0.76, 0.18, 0.22);
+                    } else if (s == 2) {
+                        sockCol = vec3(0.76, 0.20, 0.26);       // Eva: Cranberry Red
+                        trimBand = vec3(0.94, 0.88, 0.78);
+                    } else if (s == 3) {
+                        sockCol = vec3(0.16, 0.27, 0.44);       // Carmelo: Winter Slate Blue
+                        trimBand = vec3(0.88, 0.68, 0.24);
+                    } else if (s == 4) {
+                        sockCol = vec3(0.72, 0.34, 0.13);       // Ginger: Warm Cinnamon
+                        trimBand = vec3(0.18, 0.44, 0.24);
                     }
 
+                    if (isGhibli) {
+                        sockCol *= 1.18;
+                        trimBand *= 1.15;
+                    }
+
+                    // 3D cylindrical volume + fine knitted stitch texture + vertical cable-knit braid
+                    float round3D = sqrt(clamp(1.0 - pow(sp.x / 0.095, 2.0), 0.18, 1.0));
+                    float knit = sin(sp.x * 210.0) * sin(sp.y * 210.0) * 0.07;
+                    float cableBraid = smoothstep(0.018, 0.004, abs(sp.x)) * (0.5 + 0.5 * sin(sp.y * 120.0)) * 0.14;
+
+                    vec3 litSock = sockCol * (0.56 + 0.44 * round3D + knit + cableBraid);
+
+                    // Nordic Fair Isle diamond pattern band across the ankle (sp.y around -0.125)
+                    if (abs(sp.y + 0.122) < 0.020) {
+                        float diamond = abs(fract(sp.x * 26.0) - 0.5) + abs((sp.y + 0.122) * 26.0);
+                        float patMask = smoothstep(0.46, 0.34, diamond);
+                        vec3 nordicCol = mix(trimBand, vec3(0.94, 0.90, 0.82), patMask);
+                        litSock = nordicCol * (0.62 + 0.38 * round3D + knit);
+                    }
+
+                    // Contrasting cream knitted heel & toe cap with stitched seam
+                    float heel = length(sp - vec2(-0.054, -0.176)) - 0.036;
+                    float toe  = length(sp - vec2(0.096, -0.188)) - 0.038;
+                    float patchSdf = min(heel, toe);
+                    if (patchSdf < 0.0) {
+                        vec3 creamWool = vec3(0.90, 0.86, 0.80) * (0.64 + 0.36 * round3D + knit);
+                        float seamLine = smoothstep(-0.005, 0.0, patchSdf);
+                        litSock = mix(creamWool, trimBand * 0.7, seamLine * 0.65);
+                    }
+
+                    // Warm firelight bounce on lower portion of stocking
+                    litSock += fireLightColor * smoothstep(-0.06, -0.22, sp.y) * 0.38 * flicker;
                     col = mix(col, litSock, smoothstep(0.003, -0.003, bodySdf));
                 }
 
-                // Plush cream cuff with embroidered name
+                // Plush Fleece Cuff (+50% larger) with Stitched Border & Embroidered Name
                 if (cuffSdf < 0.003) {
-                    float cuffRound = sqrt(clamp(1.0 - pow(sp.x / 0.105, 2.0), 0.2, 1.0));
-                    float fleece = fbm(sp * 95.0) * 0.08;
-                    vec3 cuffCol = (isGhibli ? vec3(0.95, 0.91, 0.84) : vec3(0.88, 0.84, 0.78)) * (0.68 + 0.32 * cuffRound + fleece);
+                    float cuffRound = sqrt(clamp(1.0 - pow(sp.x / 0.130, 2.0), 0.22, 1.0));
+                    float fleece = fbm(sp * 85.0) * 0.09;
+                    vec3 cuffCol = (isGhibli ? vec3(0.96, 0.92, 0.85) : vec3(0.90, 0.86, 0.80)) * (0.68 + 0.32 * cuffRound + fleece);
+
+                    // Decorative crimson & gold stitched trim along top and bottom of cuff
+                    float borderDist = abs(abs(sp.y + 0.042) - 0.029);
+                    if (borderDist < 0.0035) {
+                        float dash = step(0.35, fract(sp.x * 45.0));
+                        vec3 trimStitch = mix(vec3(0.68, 0.12, 0.16), vec3(0.86, 0.66, 0.22), dash);
+                        cuffCol = mix(cuffCol, trimStitch, 0.85);
+                    }
+
                     cuffCol += fireLightColor * 0.22 * flicker;
 
-                    // Render stitched name ("Papa", "Mama", "Eva", "Carmelo", "Ginger")
-                    float textMask = sampleStockingName(s, sp - vec2(0.0, -0.024));
-                    vec3 stitchCol = isGhibli ? vec3(0.58, 0.10, 0.14) : vec3(0.48, 0.08, 0.10);
-                    cuffCol = mix(cuffCol, stitchCol, textMask * 0.95);
+                    // Crisp stitched family member name ("Papa", "Mama", "Eva", "Carmelo", "Ginger")
+                    float textShadow = sampleStockingName(s, sp - vec2(0.0015, -0.0435));
+                    float textMask = sampleStockingName(s, sp - vec2(0.0, -0.042));
+                    vec3 stitchCol = isGhibli ? vec3(0.58, 0.09, 0.13) : vec3(0.46, 0.07, 0.10);
+                    cuffCol = mix(cuffCol, vec3(0.25, 0.18, 0.15), textShadow * 0.35);
+                    cuffCol = mix(cuffCol, stitchCol, textMask * 0.96);
 
                     col = mix(col, cuffCol, smoothstep(0.003, -0.003, cuffSdf));
+                }
+
+                // Mini golden jingle bell hanging from corner of each cuff
+                vec2 bellPos = sp - vec2(0.098, -0.082);
+                float bellD = length(bellPos) - 0.011;
+                if (bellD < 0.002) {
+                    float bShade = clamp(1.0 - length(bellPos - vec2(-0.003, 0.003)) / 0.014, 0.2, 1.0);
+                    vec3 goldBell = vec3(0.96, 0.76, 0.24) * bShade + vec3(0.25) * pow(bShade, 4.0);
+                    col = mix(col, goldBell, smoothstep(0.002, -0.002, bellD));
                 }
             }
 
             // -----------------------------------------------------------------
-            // H. CINEMATIC POST-PROCESSING & FILM / PAINTERLY GRAIN
+            // I. CINEMATIC POST-PROCESSING
             // -----------------------------------------------------------------
             float vig = dot(uv * vec2(0.85, 1.0), uv * vec2(0.85, 1.0));
             col *= clamp(1.04 - vig * 0.34, 0.0, 1.0);
             if (isGhibli) {
-                // Subtle watercolor paper texture
                 col += (fbm(uv * 110.0) - 0.5) * 0.018;
                 col = pow(max(col, vec3(0.0)), vec3(0.90));
             } else {
@@ -767,20 +839,11 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
                 float winPane  = sdBox2D(wPos, vec2(0.18, 0.32), 0.008);
                 if (winOuter < 0.01) {
                     vec3 sky = mix(vec3(0.05, 0.07, 0.16), vec3(0.10, 0.14, 0.28), uv.y + 0.5);
-                    for (float l = 1.0; l <= 3.0; l++) {
-                        vec2 sUv = wPos * (7.0 + l * 4.0);
-                        sUv.y += uTime * (0.45 / l);
-                        sUv.x += sin(uTime * 0.4 + l * 2.0) * 0.25;
-                        vec2 sId = floor(sUv);
-                        vec2 sF = fract(sUv) - 0.5;
-                        vec2 randOffset = vec2(hash12(sId) - 0.5, hash12(sId + 17.3) - 0.5) * 0.5;
-                        float flake = length(sF - randOffset);
-                        float radius = (0.10 / l) * step(0.65, hash12(sId + 91.1));
-                        sky += vec3(0.9, 0.95, 1.0) * smoothstep(radius, radius * 0.2, flake) * (0.9 / l);
-                    }
+                    float snowMask = sampleRealisticSnow(wPos, uTime);
+                    sky = mix(sky, vec3(0.95, 0.98, 1.0), snowMask * 0.92);
                     float crossBars = min(abs(wPos.x) - 0.016, abs(wPos.y + 0.02) - 0.016);
                     float isWood = max(-winPane, -crossBars);
-                    vec3 woodCol = vec3(0.46, 0.26, 0.16) * (0.8 + 0.3 * (1.0 - abs(wPos.x) * 2.0)) + uGlowColor * 0.18;
+                    vec3 woodCol = texture(uWoodTex, fract(wPos * vec2(2.0, 1.5) + 0.5)).rgb * 1.4 + uGlowColor * 0.18;
                     vec3 winFinal = mix(woodCol, sky, smoothstep(-0.004, 0.004, isWood));
                     col = mix(col, winFinal, smoothstep(0.005, -0.005, winOuter));
                 }
@@ -806,12 +869,9 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
 
             float floorSDF = sdBox2D(uv - vec2(0.0, -0.44), vec2(0.76, 0.055), 0.025);
             if (floorSDF < 0.004) {
-                vec2 tileUv = vec2(uv.x * 5.0, (uv.y + 0.44) * 9.0);
-                vec2 tileF = fract(tileUv) - 0.5;
-                float tileSdf = sdBox2D(tileF, vec2(0.46, 0.42), 0.08);
-                vec3 tileCol = uBrickColor * 0.92 * (0.75 + 0.35 * smoothstep(0.02, -0.12, tileSdf));
+                vec2 fUv = vec2(uv.x * 0.8 + 0.5, (uv.y + 0.44) * 4.0 + 0.5);
+                vec3 tileCol = texture(uFloorTex, fUv).rgb * 1.5;
                 tileCol += uGlowColor * (1.0 / (1.0 + abs(uv.x) * 3.5)) * (0.45 + uBass * 0.3);
-                tileCol = mix(uBrickColor * 0.25, tileCol, smoothstep(0.02, -0.02, tileSdf));
                 col = mix(col, tileCol, smoothstep(0.004, -0.004, floorSDF));
             }
 
@@ -902,22 +962,11 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
             if (hatBody < 0.004) col = mix(col, shadeClay(vec3(0.84, 0.12, 0.16), hatBody, hatP, vec2(0.5, 0.5), 0.035), smoothstep(0.004, -0.004, hatBody));
             if (whiteFluff < 0.004) col = mix(col, shadeClay(vec3(0.95, 0.95, 0.98), whiteFluff, hatP, vec2(0.4, 0.6), 0.025), smoothstep(0.004, -0.004, whiteFluff));
 
-            float garCurveY = 0.42 - 0.10 * cos(clamp(uv.x * 2.4, -3.14159, 3.14159));
-            if (abs(uv.x) < 0.68 && uv.y > 0.24) {
-                float leafClusters = sin(uv.x * 38.0) * 0.015 + cos(uv.x * 75.0) * 0.008;
-                float garSDF = (abs(uv.y - garCurveY) + leafClusters) - 0.052;
-                if (garSDF < 0.005) col = mix(col, shadeClay(vec3(0.14, 0.42, 0.20), garSDF, vec2(0.0, uv.y - garCurveY), vec2(0.0, -0.6), 0.04), smoothstep(0.005, -0.005, garSDF));
-                for (float b = -5.0; b <= 5.0; b += 1.0) {
-                    if (abs(b) < 0.5) continue;
-                    float bx = b * 0.11;
-                    float by = 0.42 - 0.10 * cos(clamp(bx * 2.4, -3.14159, 3.14159)) - 0.035;
-                    vec2 bp = uv - vec2(bx, by);
-                    float bSdf = length(bp) - 0.024;
-                    if (bSdf < 0.003) {
-                        vec3 bBase = (mod(abs(b), 2.0) < 0.5) ? vec3(0.88, 0.12, 0.16) : vec3(0.92, 0.68, 0.16);
-                        col = mix(col, shadeClay(bBase, bSdf, bp, vec2(-0.4, 0.6), 0.022), smoothstep(0.003, -0.003, bSdf));
-                    }
-                }
+            // Mistletoe garland image texture over top of Kawaii chimney too
+            if (uv.x >= -0.62 && uv.x <= 0.62 && uv.y >= 0.25 && uv.y <= 0.47) {
+                vec2 mUv = vec2((uv.x + 0.62) / 1.24, 1.0 - (uv.y - 0.25) / 0.22);
+                vec4 mTex = texture(uMistletoeTex, mUv);
+                col = mix(col, mTex.rgb * 1.15, mTex.a);
             }
 
             float vig = dot(uv, uv);
@@ -964,12 +1013,36 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
         trebleLocation = GLES32.glGetUniformLocation(program, "uTreble")
         sceneModeLocation = GLES32.glGetUniformLocation(program, "uSceneMode")
 
+        woodTexLocation = GLES32.glGetUniformLocation(program, "uWoodTex")
+        floorTexLocation = GLES32.glGetUniformLocation(program, "uFloorTex")
+        mistletoeTexLocation = GLES32.glGetUniformLocation(program, "uMistletoeTex")
+
         bgColLoc = GLES32.glGetUniformLocation(program, "uBgColor")
         brickColLoc = GLES32.glGetUniformLocation(program, "uBrickColor")
         flameOuterLoc = GLES32.glGetUniformLocation(program, "uFlameOuter")
         flameMidLoc = GLES32.glGetUniformLocation(program, "uFlameMid")
         flameCoreLoc = GLES32.glGetUniformLocation(program, "uFlameCore")
         glowColLoc = GLES32.glGetUniformLocation(program, "uGlowColor")
+
+        // Cargar o generar texturas de alta resolución para madera, suelo y muérdago
+        woodTexId = TextureGenerator.loadOrGenerateTexture(
+            context = context,
+            customResName = "custom_mantel_wood",
+            generator = { TextureGenerator.createMantelWoodBitmap() },
+            repeatWrap = true
+        )
+        floorTexId = TextureGenerator.loadOrGenerateTexture(
+            context = context,
+            customResName = "custom_floor_wood",
+            generator = { TextureGenerator.createFloorWoodBitmap() },
+            repeatWrap = true
+        )
+        mistletoeTexId = TextureGenerator.loadOrGenerateTexture(
+            context = context,
+            customResName = "custom_mistletoe",
+            generator = { TextureGenerator.createMistletoeGarlandBitmap() },
+            repeatWrap = false
+        )
     }
 
     override fun onSurfaceChanged(gl: GL10?, w: Int, h: Int) {
@@ -988,6 +1061,19 @@ class KawaiiFireplaceRenderer : GLSurfaceView.Renderer {
         GLES32.glUniform1f(bassLocation, bassEnergy)
         GLES32.glUniform1f(trebleLocation, trebleEnergy)
         GLES32.glUniform1f(sceneModeLocation, sceneMode.id.toFloat())
+
+        // Vincular las 3 texturas de imagen en sus unidades GL_TEXTURE
+        GLES32.glActiveTexture(GLES32.GL_TEXTURE0)
+        GLES32.glBindTexture(GLES32.GL_TEXTURE_2D, woodTexId)
+        GLES32.glUniform1i(woodTexLocation, 0)
+
+        GLES32.glActiveTexture(GLES32.GL_TEXTURE1)
+        GLES32.glBindTexture(GLES32.GL_TEXTURE_2D, floorTexId)
+        GLES32.glUniform1i(floorTexLocation, 1)
+
+        GLES32.glActiveTexture(GLES32.GL_TEXTURE2)
+        GLES32.glBindTexture(GLES32.GL_TEXTURE_2D, mistletoeTexId)
+        GLES32.glUniform1i(mistletoeTexLocation, 2)
 
         val t = currentTheme
         GLES32.glUniform3fv(bgColLoc, 1, t.bgColor, 0)

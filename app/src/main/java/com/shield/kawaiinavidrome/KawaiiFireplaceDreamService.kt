@@ -77,7 +77,7 @@ class KawaiiFireplaceDreamService : DreamService() {
         currentSceneTheme = SceneTheme.entries.firstOrNull { it.id == savedMode } ?: SceneTheme.REALISTIC
         currentKawaiiPaletteIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
 
-        renderer = KawaiiFireplaceRenderer()
+        renderer = KawaiiFireplaceRenderer(this)
         glSurfaceView = findViewById<GLSurfaceView>(R.id.glSurfaceView).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)

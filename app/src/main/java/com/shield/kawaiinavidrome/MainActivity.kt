@@ -76,7 +76,7 @@ class MainActivity : Activity() {
         tvArtistName = findViewById(R.id.tvArtistName)
         pbTrackProgress = findViewById(R.id.pbTrackProgress)
 
-        renderer = KawaiiFireplaceRenderer()
+        renderer = KawaiiFireplaceRenderer(this)
         glSurfaceView = findViewById<GLSurfaceView>(R.id.glSurfaceView).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
