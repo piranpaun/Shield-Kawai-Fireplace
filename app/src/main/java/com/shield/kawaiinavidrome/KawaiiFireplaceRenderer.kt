@@ -81,24 +81,22 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
         }
 
         vec3 fireGradient(float t) {
-            vec3 c1 = vec3(0.55, 0.06, 0.01);
-            vec3 c2 = vec3(0.96, 0.28, 0.02);
-            vec3 c3 = vec3(1.00, 0.72, 0.16);
+            vec3 c1 = vec3(0.58, 0.07, 0.01);
+            vec3 c2 = vec3(0.97, 0.30, 0.02);
+            vec3 c3 = vec3(1.00, 0.74, 0.18);
             vec3 c4 = vec3(1.00, 0.97, 0.86);
-            vec3 col = mix(c1, c2, smoothstep(0.08, 0.36, t));
-            col = mix(col, c3, smoothstep(0.36, 0.70, t));
-            col = mix(col, c4, smoothstep(0.70, 0.96, t));
+            vec3 col = mix(c1, c2, smoothstep(0.06, 0.34, t));
+            col = mix(col, c3, smoothstep(0.34, 0.68, t));
+            col = mix(col, c4, smoothstep(0.68, 0.95, t));
             return col;
         }
 
-        // Procedural teardrop candle flame (with sway & inner core)
         vec3 renderCandleFlame(vec3 bgCol, vec2 imgUv, vec2 flameCenter, float scale, float aspect, float phase, float flicker) {
             vec2 d = (imgUv - flameCenter) * vec2(aspect, 1.0);
             float yNorm = clamp((-d.y + 0.008 * scale) / (0.026 * scale), 0.0, 1.0);
             float sway = sin(uTime * 5.2 + phase) * 0.0022 * scale * pow(yNorm, 1.4);
             d.x -= sway;
 
-            // Teardrop profile: rounded bottom, pointed top
             float widthAtY = (0.0062 * scale) * sin(pow(yNorm, 0.55) * 3.14159) * (1.0 - 0.35 * yNorm);
             float inFlame = length(vec2(d.x / max(widthAtY, 0.0004), (d.y + 0.003 * scale) / (0.013 * scale)));
 
@@ -106,26 +104,22 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
             if (inFlame < 1.35) {
                 float core = smoothstep(1.15, 0.15, inFlame);
                 vec3 flameCol = mix(vec3(1.0, 0.52, 0.08), vec3(1.0, 0.97, 0.82), pow(core, 1.5));
-                // Subtle cool-blue base near the candle wick
                 float wickBase = smoothstep(0.28, 0.0, yNorm) * core;
                 flameCol = mix(flameCol, vec3(0.45, 0.65, 1.0), wickBase * 0.45);
                 outCol = mix(outCol, flameCol, smoothstep(1.25, 0.55, inFlame));
             }
 
-            // Warm soft halo around the candle flame
             float haloDist = length((imgUv - flameCenter) * vec2(aspect, 1.0));
             float halo = exp(-haloDist * (52.0 / scale)) * 0.52 * flicker;
             outCol += vec3(1.0, 0.68, 0.24) * halo;
             return outCol;
         }
 
-        // Slow, multi-layered falling snowflakes (3x3 Voronoi neighborhood, zero blocks)
         float sampleSlowSnow(vec2 uv, float aspect, float time) {
             vec2 p = vec2(uv.x * aspect, uv.y);
             float totalSnow = 0.0;
             for (float layer = 1.0; layer <= 3.0; layer += 1.0) {
                 float scale = 14.0 + layer * 9.0;
-                // Gentle, slow winter snowfall
                 float fallSpeed = 0.048 / (0.65 + layer * 0.35);
                 float wind = 0.025 * sin(time * 0.25 + layer * 1.8);
 
@@ -154,7 +148,6 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
             return clamp(totalSnow, 0.0, 1.0);
         }
 
-        // 4-point star glint for Christmas tree ornaments
         float sampleStarSparkle(vec2 imgUv, vec2 center, float aspect, float radius) {
             vec2 d = (imgUv - center) * vec2(aspect, 1.0);
             float dist = length(d);
@@ -170,7 +163,6 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
         }
 
         void main() {
-            // Top-left UV coordinates matching Cozy Christmas Fireplace Living Room.png
             vec2 imgUv = vec2(gl_FragCoord.x / uResolution.x, 1.0 - gl_FragCoord.y / uResolution.y);
             float aspect = uResolution.x / uResolution.y;
 
@@ -180,73 +172,77 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
             float fireFlicker = 0.92 + 0.08 * sin(uTime * 11.7) * cos(uTime * 7.3) + uBass * 0.32;
 
             // =====================================================================
-            // 1. PROCEDURAL FIREPLACE FIRE (REPLACING STATIC FIRE IN FIREBOX)
+            // 1. TALL PROCEDURAL FIREPLACE FIRE (COMPLETELY REPLACING STILL FIRE)
             // =====================================================================
-            // Firebox opening bounds: x in [0.312, 0.678], y in [0.542, 0.910]
-            vec2 boxCenter = vec2(0.495, 0.726);
-            vec2 boxHalf = vec2(0.183, 0.184);
+            vec2 boxCenter = vec2(0.495, 0.722);
+            vec2 boxHalf = vec2(0.186, 0.188);
             float boxSdf = sdBox2D(imgUv - boxCenter, boxHalf, 0.012);
 
             if (boxSdf < 0.008) {
                 float boxMask = smoothstep(0.006, -0.004, boxSdf);
                 float lum = dot(baseTex, vec3(0.299, 0.587, 0.114));
+                float fireChroma = max(0.0, baseTex.r - baseTex.b);
 
-                // Suppress the static yellow/white painted fire in the upper/mid firebox
-                // while keeping the dark brick wall & dark wooden logs/iron grate intact
-                float isLogZone = smoothstep(0.73, 0.79, imgUv.y) * smoothstep(0.19, 0.11, abs(imgUv.x - 0.495));
-                float staticFireSuppress = smoothstep(0.36, 0.68, lum) * (1.0 - isLogZone * 0.72);
-                vec3 darkSootBrick = vec3(0.19, 0.06, 0.02) * (0.75 + 0.35 * fbm(imgUv * 35.0));
-                vec3 hearthBg = mix(baseTex, darkSootBrick, staticFireSuppress * 0.92);
+                // Protect dark foreground logs and iron grate bars while suppressing
+                // the entire painted yellow/orange fire from bottom coals to top arch
+                float isLogZone = smoothstep(0.74, 0.80, imgUv.y) * smoothstep(0.19, 0.10, abs(imgUv.x - 0.495));
+                float staticFireSuppress = smoothstep(0.22, 0.50, lum)
+                                         * smoothstep(0.10, 0.26, fireChroma)
+                                         * (1.0 - isLogZone * 0.78);
 
-                // Animate glowing coals along the bottom grate (y in [0.85, 0.91])
+                vec3 darkSootBrick = vec3(0.22, 0.08, 0.03) * (0.78 + 0.32 * fbm(imgUv * 32.0));
+                vec3 hearthBg = mix(baseTex, darkSootBrick, staticFireSuppress * 0.96);
+
+                // Glowing ember bed along the bottom grate
                 if (imgUv.y > 0.84) {
                     float coalPulse = 0.75 + 0.25 * sin(uTime * 6.0 + imgUv.x * 40.0) + uBass * 0.35;
-                    float emberMask = smoothstep(0.45, 0.75, lum) * smoothstep(0.84, 0.88, imgUv.y);
-                    hearthBg += vec3(0.85, 0.24, 0.03) * emberMask * (coalPulse - 0.85);
+                    float emberMask = smoothstep(0.38, 0.70, lum) * smoothstep(0.84, 0.88, imgUv.y);
+                    hearthBg += vec3(0.90, 0.26, 0.03) * emberMask * (coalPulse - 0.82);
                 }
 
-                // Normalized coordinates inside the fire volume (0 at bottom logs, 1 at top)
+                // Taller & wider normalized fire volume reaching the top of the firebox (y ~ 0.53)
                 vec2 fUv = vec2(
-                    (imgUv.x - 0.495) / 0.155,
-                    (0.875 - imgUv.y) / (0.315 + uBass * 0.035)
+                    (imgUv.x - 0.495) / 0.168,
+                    (0.885 - imgUv.y) / (0.355 + uBass * 0.032)
                 );
 
-                if (fUv.y > -0.05 && fUv.y < 1.12 && abs(fUv.x) < 1.15) {
+                if (fUv.y > -0.05 && fUv.y < 1.15 && abs(fUv.x) < 1.15) {
                     float yH = clamp(fUv.y, 0.0, 1.0);
-                    vec2 flow1 = vec2(fUv.x * 3.1, fUv.y * 2.5 - uTime * 2.7);
-                    vec2 flow2 = vec2(fUv.x * 6.4 + 3.7, fUv.y * 5.2 - uTime * 4.4);
-                    float turb = (fbm(flow1) - 0.5) * 0.52 + (fbm(flow2) - 0.5) * 0.24;
+                    vec2 flow1 = vec2(fUv.x * 3.0, fUv.y * 2.2 - uTime * 2.8);
+                    vec2 flow2 = vec2(fUv.x * 6.2 + 3.7, fUv.y * 4.8 - uTime * 4.5);
+                    float turb = (fbm(flow1) - 0.5) * 0.50 + (fbm(flow2) - 0.5) * 0.24;
 
-                    float taper = 1.0 - pow(yH, 1.3) * 0.76;
-                    float wx = (fUv.x + turb * (0.22 + yH * 0.92)) / max(taper, 0.14);
+                    // Keep body full higher up, tapering cleanly into tall flame spires near the top
+                    float taper = 1.0 - pow(yH, 1.55) * 0.68;
+                    float wx = (fUv.x + turb * (0.20 + yH * 0.85)) / max(taper, 0.15);
 
-                    // Multiple dancing flame tongues
-                    float tongues = sin(wx * 5.4 + fbm(flow1 * 1.4) * 3.8) * 0.22 * yH;
-                    float coreDist = length(vec2(wx * 1.05, max(0.0, yH - 0.16) * 1.15));
-                    float density = (1.0 - coreDist + tongues + (fbm(flow2) - 0.45) * 0.44)
-                                  * smoothstep(1.04, 0.14, yH)
-                                  * smoothstep(-0.04, 0.09, fUv.y);
+                    float tongues = (sin(wx * 5.2 + fbm(flow1 * 1.5) * 3.8) * 0.24
+                                   + cos(wx * 3.1 - uTime * 3.2) * 0.14) * smoothstep(0.05, 0.75, yH);
+                    float coreDist = length(vec2(wx * 0.96, max(0.0, yH - 0.34) * 0.92));
+                    float density = (1.08 - coreDist + tongues + (fbm(flow2) - 0.44) * 0.46)
+                                  * smoothstep(1.08, 0.22, yH)
+                                  * smoothstep(-0.04, 0.08, fUv.y);
 
                     // Keep the front wooden logs partially in front of the lower flame base
-                    float frontLogOcclusion = isLogZone * smoothstep(0.55, 0.24, lum) * smoothstep(0.38, 0.12, yH);
+                    float frontLogOcclusion = isLogZone * smoothstep(0.55, 0.24, lum) * smoothstep(0.36, 0.10, yH);
                     density *= (1.0 - frontLogOcclusion * 0.85);
 
-                    if (density > 0.02) {
-                        float temp = clamp(density * (0.95 + uBass * 0.35), 0.0, 1.0);
+                    if (density > 0.015) {
+                        float temp = clamp(density * (0.98 + uBass * 0.35), 0.0, 1.0);
                         vec3 fCol = fireGradient(temp);
-                        float alpha = smoothstep(0.02, 0.38, density);
+                        float alpha = smoothstep(0.015, 0.34, density);
                         hearthBg = mix(hearthBg, fCol, clamp(alpha, 0.0, 1.0));
-                        hearthBg += fCol * alpha * 0.24;
+                        hearthBg += fCol * alpha * 0.26;
                     }
                 }
 
                 // Rising sparks & embers inside the firebox
-                for (float k = 1.0; k <= 14.0; k += 1.0) {
+                for (float k = 1.0; k <= 16.0; k += 1.0) {
                     float sd = hash12(vec2(k * 43.1, 17.9));
                     float life = fract(uTime * (0.24 + sd * 0.20) + sd);
                     vec2 spPos = vec2(
-                        0.495 + (sd - 0.5) * 0.26 + sin(life * 8.5 + k) * 0.018,
-                        0.85 - life * 0.28
+                        0.495 + (sd - 0.5) * 0.28 + sin(life * 8.5 + k) * 0.020,
+                        0.86 - life * 0.32
                     );
                     float dSp = length((imgUv - spPos) * vec2(aspect, 1.0));
                     float rSp = (0.0022 + 0.002 * fract(sd * 7.3)) * (1.0 - life) * (1.0 + uTreble * 0.45);
@@ -260,27 +256,23 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
             }
 
             // Dynamic warm firelight bounce onto surrounding stones & stockings
-            float surroundDist = length((imgUv - vec2(0.495, 0.74)) * vec2(aspect * 0.7, 1.0));
-            float bounceGlow = exp(-surroundDist * 2.4) * (fireFlicker - 0.92);
-            col += vec3(1.0, 0.45, 0.10) * bounceGlow * 0.45;
+            float surroundDist = length((imgUv - vec2(0.495, 0.72)) * vec2(aspect * 0.68, 1.0));
+            float bounceGlow = exp(-surroundDist * 2.3) * (fireFlicker - 0.92);
+            col += vec3(1.0, 0.46, 0.10) * bounceGlow * 0.48;
 
             // =====================================================================
             // 2. PROCEDURAL CANDLE FLAMES IN BOTH LANTERNS
             // =====================================================================
-            // A) Top-left mantel lantern candle (flame around [0.284, 0.125])
             float flickerTop = 0.88 + 0.12 * sin(uTime * 8.4 + 0.7) * cos(uTime * 5.9) + uBass * 0.12;
             vec2 topFlamePos = vec2(0.284, 0.125);
-            // Suppress tiny static painted flame dot before drawing procedural candle
             float topDotMask = smoothstep(0.015, 0.005, length((imgUv - vec2(0.284, 0.123)) * vec2(aspect, 1.0)));
             col = mix(col, vec3(0.46, 0.26, 0.11), topDotMask * 0.88);
             col = renderCandleFlame(col, imgUv, topFlamePos, 0.92, aspect, 0.4, flickerTop);
-            // Warm glow inside top lantern glass housing
             float topGlassBox = sdBox2D(imgUv - vec2(0.284, 0.135), vec2(0.019, 0.056), 0.004);
             if (topGlassBox < 0.0) {
                 col += vec3(1.0, 0.62, 0.18) * (flickerTop - 0.88) * 0.55;
             }
 
-            // B) Bottom-right hearth lantern candle (flame around [0.772, 0.856])
             float flickerBot = 0.88 + 0.12 * sin(uTime * 7.6 + 2.3) * cos(uTime * 6.3 + 1.1) + uBass * 0.12;
             vec2 botFlamePos = vec2(0.772, 0.856);
             float botDotMask = smoothstep(0.020, 0.007, length((imgUv - vec2(0.772, 0.854)) * vec2(aspect, 1.0)));
@@ -294,15 +286,12 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
             // =====================================================================
             // 3. SLOW FALLING SNOW OUTSIDE THE RIGHT WINDOW
             // =====================================================================
-            // Window bounds: x in [0.850, 1.0], y in [0.0, 0.606]
             if (imgUv.x > 0.848 && imgUv.y < 0.608) {
-                // Exclude brown wooden window mullions (vertical bar ~0.967, horizontal bars ~0.206 & ~0.446)
                 float vBar = smoothstep(0.006, 0.013, abs(imgUv.x - 0.967));
                 float hBar1 = smoothstep(0.007, 0.014, abs(imgUv.y - 0.206));
                 float hBar2 = smoothstep(0.007, 0.014, abs(imgUv.y - 0.446));
                 float leftFrame = smoothstep(0.848, 0.856, imgUv.x);
                 float botSill = smoothstep(0.608, 0.598, imgUv.y);
-                // Color check: winter glass/snow has cool blue >= red*0.80, whereas wood bars are warm brown
                 float coolPaneMask = smoothstep(0.72, 0.92, baseTex.b / max(baseTex.r, 0.05));
 
                 float glassMask = vBar * hBar1 * hBar2 * leftFrame * botSill * coolPaneMask;
@@ -327,7 +316,6 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
                 float fi = float(i);
                 float speed = 1.35 + fract(fi * 0.37) * 0.85;
                 float phase = fi * 2.17;
-                // Intermittent random-feeling sparkle peak + treble boost
                 float wave = sin(uTime * speed + phase) * sin(uTime * (speed * 0.61) + fi * 4.1);
                 float twinkle = pow(clamp(wave, 0.0, 1.0), 6.0) * (1.15 + uTreble * 0.85);
 
@@ -337,7 +325,6 @@ class KawaiiFireplaceRenderer(private val context: Context) : GLSurfaceView.Rend
                 }
             }
 
-            // Subtle warm shimmer on the Christmas tree fairy lights (left side x < 0.24)
             if (imgUv.x < 0.24) {
                 float isFairyLight = smoothstep(0.75, 0.98, baseTex.r) * smoothstep(0.55, 0.85, baseTex.g);
                 if (isFairyLight > 0.05) {
