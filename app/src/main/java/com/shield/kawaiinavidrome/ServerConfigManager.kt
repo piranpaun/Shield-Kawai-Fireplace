@@ -43,15 +43,17 @@ class ServerConfigManager(context: Context) {
         )
     }
 
-    fun saveSceneMode(mode: Int) {
-        prefs.edit().putInt("scene_mode", mode).apply()
+    fun saveNfsShare(share: String) {
+        prefs.edit().putString("nfs_share", share.trim()).apply()
     }
 
-    fun getSceneMode(): Int = prefs.getInt("scene_mode", SceneTheme.REALISTIC.id)
+    fun getNfsShare(): String =
+        prefs.getString("nfs_share", "192.168.1.53:/Alex/Christmas Music")
+            ?: "192.168.1.53:/Alex/Christmas Music"
 
-    fun saveThemeIndex(index: Int) {
-        prefs.edit().putInt("theme_index", index).apply()
+    fun saveUseNfs(useNfs: Boolean) {
+        prefs.edit().putBoolean("use_nfs", useNfs).apply()
     }
 
-    fun getThemeIndex(): Int = prefs.getInt("theme_index", 0)
+    fun isUseNfs(): Boolean = prefs.getBoolean("use_nfs", true)
 }

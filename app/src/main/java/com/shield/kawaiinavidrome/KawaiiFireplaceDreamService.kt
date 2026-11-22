@@ -37,10 +37,6 @@ class KawaiiFireplaceDreamService : DreamService() {
     private lateinit var tvArtistName: TextView
     private lateinit var pbTrackProgress: ProgressBar
 
-    private var currentSceneTheme: SceneTheme = SceneTheme.REALISTIC
-    private var currentKawaiiPaletteIndex = 0
-    private var currentPlaylistName = "Screensaver"
-
     private val uiHandler = Handler(Looper.getMainLooper())
     private val hideHudRunnable = Runnable {
         hudContainer.animate().alpha(0f).setDuration(800).start()
@@ -72,19 +68,18 @@ class KawaiiFireplaceDreamService : DreamService() {
         tvArtistName = findViewById(R.id.tvArtistName)
         pbTrackProgress = findViewById(R.id.pbTrackProgress)
 
-        configManager = ServerConfigManager(this)
-        val savedMode = configManager.getSceneMode()
-        currentSceneTheme = SceneTheme.entries.firstOrNull { it.id == savedMode } ?: SceneTheme.REALISTIC
-        currentKawaiiPaletteIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
+        val warmAccent = 0xFFFFB703.toInt()
+        pbTrackProgress.progressTintList = ColorStateList.valueOf(warmAccent)
+        tvStatusBadge.setTextColor(warmAccent)
+        (hudContainer.background as? GradientDrawable)?.setStroke(4, warmAccent)
 
+        configManager = ServerConfigManager(this)
         renderer = KawaiiFireplaceRenderer(this)
         glSurfaceView = findViewById<GLSurfaceView>(R.id.glSurfaceView).apply {
             setEGLContextClientVersion(3)
             setRenderer(renderer)
             renderMode = GLSurfaceView.RENDERMODE_CONTINUOUSLY
         }
-
-        applyVisualTheme()
     }
 
     override fun onDreamingStarted() {
@@ -92,47 +87,49 @@ class KawaiiFireplaceDreamService : DreamService() {
         glSurfaceView.onResume()
 
         val creds = configManager.getCredentials()
-        if (creds.isValid) {
-            navidromeClient = NavidromeClient(
-                context = this,
-                serverUrl = creds.serverUrl,
-                username = creds.username,
-                password = creds.password,
-                onTrackChanged = { metadata ->
-                    tvTrackTitle.text = metadata.title ?: "Cozy Fireplace"
-                    tvArtistName.text = metadata.artist ?: "Navidrome"
+        navidromeClient = NavidromeClient(
+            context = this,
+            serverUrl = creds.serverUrl,
+            username = creds.username,
+            password = creds.password,
+            onTrackChanged = { metadata ->
+                tvTrackTitle.text = metadata.title ?: "Cozy Fireplace"
+                tvArtistName.text = metadata.artist ?: "Christmas Music"
+                if (metadata.artworkUri != null) {
                     ivCoverArt.load(metadata.artworkUri) {
                         crossfade(true)
                         transformations(RoundedCornersTransformation(24f))
                     }
-                    showHudTemporarily()
-                },
-                onAudioSessionReady = { sessionId -> setupVisualizer(sessionId) }
-            )
+                } else {
+                    ivCoverArt.setImageResource(R.drawable.fireplace_base)
+                }
+                showHudTemporarily()
+            },
+            onAudioSessionReady = { sessionId -> setupVisualizer(sessionId) }
+        )
 
-            dreamScope.launch {
+        dreamScope.launch {
+            if (configManager.isUseNfs()) {
+                val share = configManager.getNfsShare()
+                tvStatusBadge.text = "🌙 NFS: ${share.substringAfter(':')}"
+                try {
+                    navidromeClient?.loadAndPlayNfsShare(share, shuffle = true)
+                } catch (_: Exception) {}
+            } else if (creds.isValid) {
                 val playlists = navidromeClient?.fetchPlaylists().orEmpty()
-                val targetList = playlists.firstOrNull {
+                val target = playlists.firstOrNull {
                     it.name.contains("navidad", ignoreCase = true) ||
                     it.name.contains("christmas", ignoreCase = true)
                 } ?: playlists.firstOrNull()
-
-                if (targetList != null) {
-                    currentPlaylistName = targetList.name
-                    updateStatusBadge()
-                    navidromeClient?.loadAndPlayPlaylist(targetList.id)
+                tvStatusBadge.text = "🌙 Navidrome"
+                if (target != null) {
+                    navidromeClient?.loadAndPlayPlaylist(target.id)
                 } else {
-                    currentPlaylistName = "Random Mix"
-                    updateStatusBadge()
                     navidromeClient?.loadAndPlayRandomSongs(50)
                 }
             }
-            uiHandler.post(progressRunnable)
-        } else {
-            tvTrackTitle.text = "Ambient Fireplace Mode"
-            tvArtistName.text = "Configure Navidrome in the main app"
-            showHudTemporarily()
         }
+        uiHandler.post(progressRunnable)
     }
 
     override fun onDreamingStopped() {
@@ -148,29 +145,6 @@ class KawaiiFireplaceDreamService : DreamService() {
     override fun onDetachedFromWindow() {
         super.onDetachedFromWindow()
         dreamScope.cancel()
-    }
-
-    private fun applyVisualTheme() {
-        renderer.sceneMode = currentSceneTheme
-        val kawaiiPalette = KawaiiThemes.list[currentKawaiiPaletteIndex]
-        renderer.currentTheme = kawaiiPalette
-        val accent = if (currentSceneTheme == SceneTheme.KAWAII) kawaiiPalette.hudAccentHex else currentSceneTheme.accentHex
-        pbTrackProgress.progressTintList = ColorStateList.valueOf(accent)
-        tvStatusBadge.setTextColor(accent)
-        (hudContainer.background as? GradientDrawable)?.setStroke(4, accent)
-        updateStatusBadge()
-    }
-
-    private fun cycleSceneTheme() {
-        val nextId = (currentSceneTheme.id + 1) % SceneTheme.entries.size
-        currentSceneTheme = SceneTheme.entries.first { it.id == nextId }
-        configManager.saveSceneMode(currentSceneTheme.id)
-        applyVisualTheme()
-        showHudTemporarily()
-    }
-
-    private fun updateStatusBadge() {
-        tvStatusBadge.text = "🌙 ${currentSceneTheme.displayName}  •  🎵 $currentPlaylistName"
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -206,10 +180,6 @@ class KawaiiFireplaceDreamService : DreamService() {
                 KeyEvent.KEYCODE_DPAD_LEFT,
                 KeyEvent.KEYCODE_MEDIA_PREVIOUS -> {
                     navidromeClient?.prevTrack()
-                    return true
-                }
-                KeyEvent.KEYCODE_DPAD_UP -> {
-                    cycleSceneTheme()
                     return true
                 }
                 KeyEvent.KEYCODE_BACK,

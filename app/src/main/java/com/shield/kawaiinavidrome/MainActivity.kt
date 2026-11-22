@@ -18,6 +18,7 @@ import android.widget.EditText
 import android.widget.ImageView
 import android.widget.LinearLayout
 import android.widget.ProgressBar
+import android.widget.RadioButton
 import android.widget.TextView
 import coil.load
 import coil.transform.RoundedCornersTransformation
@@ -44,9 +45,7 @@ class MainActivity : Activity() {
     private lateinit var pbTrackProgress: ProgressBar
 
     private var playlists: List<NavidromePlaylist> = emptyList()
-    private var currentPlaylistName: String = "Random Mix"
-    private var currentSceneTheme: SceneTheme = SceneTheme.REALISTIC
-    private var currentKawaiiPaletteIndex = 0
+    private var currentSourceLabel: String = "NFS: Christmas Music"
 
     private val uiHandler = Handler(Looper.getMainLooper())
     private val hideHudRunnable = Runnable {
@@ -76,6 +75,11 @@ class MainActivity : Activity() {
         tvArtistName = findViewById(R.id.tvArtistName)
         pbTrackProgress = findViewById(R.id.pbTrackProgress)
 
+        val warmAccent = 0xFFFFB703.toInt()
+        pbTrackProgress.progressTintList = ColorStateList.valueOf(warmAccent)
+        tvStatusBadge.setTextColor(warmAccent)
+        (hudContainer.background as? GradientDrawable)?.setStroke(4, warmAccent)
+
         renderer = KawaiiFireplaceRenderer(this)
         glSurfaceView = findViewById<GLSurfaceView>(R.id.glSurfaceView).apply {
             setEGLContextClientVersion(3)
@@ -88,38 +92,72 @@ class MainActivity : Activity() {
         }
 
         configManager = ServerConfigManager(this)
-        val savedMode = configManager.getSceneMode()
-        currentSceneTheme = SceneTheme.entries.firstOrNull { it.id == savedMode } ?: SceneTheme.REALISTIC
-        currentKawaiiPaletteIndex = configManager.getThemeIndex().coerceIn(0, KawaiiThemes.list.lastIndex)
-        applyVisualTheme()
-
         val creds = configManager.getCredentials()
+
         navidromeClient = NavidromeClient(
             context = this,
             serverUrl = creds.serverUrl,
             username = creds.username,
             password = creds.password,
             onTrackChanged = { metadata ->
-                tvTrackTitle.text = metadata.title ?: "Unknown Track"
-                tvArtistName.text = metadata.artist ?: "Unknown Artist"
-                ivCoverArt.load(metadata.artworkUri) {
-                    crossfade(true)
-                    transformations(RoundedCornersTransformation(24f))
+                tvTrackTitle.text = metadata.title ?: "Christmas Track"
+                tvArtistName.text = metadata.artist ?: currentSourceLabel
+                if (metadata.artworkUri != null) {
+                    ivCoverArt.load(metadata.artworkUri) {
+                        crossfade(true)
+                        transformations(RoundedCornersTransformation(24f))
+                    }
+                } else {
+                    ivCoverArt.setImageResource(R.drawable.fireplace_base)
                 }
                 showHudTemporarily()
             },
             onAudioSessionReady = { sessionId -> setupVisualizer(sessionId) }
         )
 
-        if (creds.isValid) {
-            autoStartMusic()
-        } else {
-            showServerConfigDialog(isFirstRun = true)
-        }
+        autoStartMusic()
         uiHandler.post(progressRunnable)
     }
 
     private fun autoStartMusic() {
+        if (configManager.isUseNfs()) {
+            startNfsPlayback(shuffle = false)
+        } else {
+            val creds = configManager.getCredentials()
+            if (creds.isValid) {
+                startNavidromePlayback()
+            } else {
+                showServerConfigDialog(isFirstRun = false)
+            }
+        }
+    }
+
+    private fun startNfsPlayback(shuffle: Boolean) {
+        val share = configManager.getNfsShare()
+        currentSourceLabel = "NFS: ${share.substringAfter(':')}"
+        tvStatusBadge.text = "📂 $currentSourceLabel"
+        tvTrackTitle.text = "Connecting to NFS..."
+        tvArtistName.text = share
+        showHudTemporarily()
+
+        activityScope.launch {
+            try {
+                val count = navidromeClient.loadAndPlayNfsShare(share, shuffle = shuffle)
+                if (count > 0) {
+                    tvStatusBadge.text = "📂 $currentSourceLabel ($count tracks)"
+                } else {
+                    tvTrackTitle.text = "No audio files found on NFS"
+                    tvArtistName.text = "Press D-Pad Down to configure"
+                }
+            } catch (e: Exception) {
+                tvTrackTitle.text = "NFS Connection Error"
+                tvArtistName.text = e.message ?: share
+            }
+            showHudTemporarily()
+        }
+    }
+
+    private fun startNavidromePlayback() {
         activityScope.launch {
             playlists = navidromeClient.fetchPlaylists()
             val christmasList = playlists.firstOrNull {
@@ -129,94 +167,56 @@ class MainActivity : Activity() {
             } ?: playlists.firstOrNull()
 
             if (christmasList != null) {
-                currentPlaylistName = christmasList.name
-                updateStatusBadge()
+                currentSourceLabel = "Navidrome: ${christmasList.name}"
+                tvStatusBadge.text = "🎵 $currentSourceLabel"
                 navidromeClient.loadAndPlayPlaylist(christmasList.id)
             } else {
-                currentPlaylistName = "Random (50)"
-                updateStatusBadge()
+                currentSourceLabel = "Navidrome: Random Mix"
+                tvStatusBadge.text = "🎵 $currentSourceLabel"
                 navidromeClient.loadAndPlayRandomSongs(50)
             }
         }
     }
 
-    private fun applyVisualTheme() {
-        renderer.sceneMode = currentSceneTheme
-        val kawaiiPalette = KawaiiThemes.list[currentKawaiiPaletteIndex]
-        renderer.currentTheme = kawaiiPalette
-
-        val accent = if (currentSceneTheme == SceneTheme.KAWAII) {
-            kawaiiPalette.hudAccentHex
-        } else {
-            currentSceneTheme.accentHex
-        }
-
-        pbTrackProgress.progressTintList = ColorStateList.valueOf(accent)
-        tvStatusBadge.setTextColor(accent)
-        (hudContainer.background as? GradientDrawable)?.setStroke(4, accent)
-        updateStatusBadge()
-    }
-
-    private fun cycleSceneTheme() {
-        val nextId = (currentSceneTheme.id + 1) % SceneTheme.entries.size
-        currentSceneTheme = SceneTheme.entries.first { it.id == nextId }
-        configManager.saveSceneMode(currentSceneTheme.id)
-        applyVisualTheme()
-        showHudTemporarily()
-    }
-
     private fun showMenuDialog() {
+        val nfsShare = configManager.getNfsShare()
         val options = mutableListOf(
-            "🔥 Theme: Realistic Cozy 3D",
-            "🎨 Theme: Studio Ghibli Style",
-            "🧸 Theme: Kawaii Christmas",
-            "🌈 Kawaii Palette (${KawaiiThemes.list[currentKawaiiPaletteIndex].name})",
-            "🔀 Random Mix (50 tracks)",
-            "⚙️ Navidrome Server Settings"
+            "📂 Play NFS Share ($nfsShare)",
+            "🔀 Shuffle NFS Share",
+            "⚙️ Configure NFS / Navidrome Source",
+            "🎲 Navidrome Random Mix (50 tracks)"
         )
-        options.addAll(playlists.map { "🎵 ${it.name} (${it.songCount})" })
+        options.addAll(playlists.map { "🎵 Navidrome: ${it.name} (${it.songCount})" })
 
         AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_Alert)
-            .setTitle("Fireplace Themes & Navidrome")
+            .setTitle("Music Source & Playlists")
             .setItems(options.toTypedArray()) { _, which ->
                 when (which) {
                     0 -> {
-                        currentSceneTheme = SceneTheme.REALISTIC
-                        configManager.saveSceneMode(currentSceneTheme.id)
-                        applyVisualTheme()
-                        showHudTemporarily()
+                        configManager.saveUseNfs(true)
+                        startNfsPlayback(shuffle = false)
                     }
                     1 -> {
-                        currentSceneTheme = SceneTheme.GHIBLI
-                        configManager.saveSceneMode(currentSceneTheme.id)
-                        applyVisualTheme()
-                        showHudTemporarily()
+                        configManager.saveUseNfs(true)
+                        startNfsPlayback(shuffle = true)
                     }
-                    2 -> {
-                        currentSceneTheme = SceneTheme.KAWAII
-                        configManager.saveSceneMode(currentSceneTheme.id)
-                        applyVisualTheme()
-                        showHudTemporarily()
-                    }
+                    2 -> showServerConfigDialog(isFirstRun = false)
                     3 -> {
-                        currentSceneTheme = SceneTheme.KAWAII
-                        currentKawaiiPaletteIndex = (currentKawaiiPaletteIndex + 1) % KawaiiThemes.list.size
-                        configManager.saveSceneMode(currentSceneTheme.id)
-                        configManager.saveThemeIndex(currentKawaiiPaletteIndex)
-                        applyVisualTheme()
-                        showHudTemporarily()
+                        configManager.saveUseNfs(false)
+                        activityScope.launch {
+                            currentSourceLabel = "Navidrome: Random Mix"
+                            tvStatusBadge.text = "🎵 $currentSourceLabel"
+                            navidromeClient.loadAndPlayRandomSongs(50)
+                        }
                     }
-                    4 -> activityScope.launch {
-                        currentPlaylistName = "Random Mix"
-                        updateStatusBadge()
-                        navidromeClient.loadAndPlayRandomSongs(50)
-                    }
-                    5 -> showServerConfigDialog(isFirstRun = false)
-                    else -> activityScope.launch {
-                        val selected = playlists[which - 6]
-                        currentPlaylistName = selected.name
-                        updateStatusBadge()
-                        navidromeClient.loadAndPlayPlaylist(selected.id)
+                    else -> {
+                        configManager.saveUseNfs(false)
+                        activityScope.launch {
+                            val selected = playlists[which - 4]
+                            currentSourceLabel = "Navidrome: ${selected.name}"
+                            tvStatusBadge.text = "🎵 $currentSourceLabel"
+                            navidromeClient.loadAndPlayPlaylist(selected.id)
+                        }
                     }
                 }
             }
@@ -225,6 +225,9 @@ class MainActivity : Activity() {
 
     private fun showServerConfigDialog(isFirstRun: Boolean = false) {
         val dialogView = layoutInflater.inflate(R.layout.dialog_server_config, null)
+        val rbNfs = dialogView.findViewById<RadioButton>(R.id.rbSourceNfs)
+        val rbNavi = dialogView.findViewById<RadioButton>(R.id.rbSourceNavidrome)
+        val etNfs = dialogView.findViewById<EditText>(R.id.etNfsShare)
         val etUrl = dialogView.findViewById<EditText>(R.id.etServerUrl)
         val etUser = dialogView.findViewById<EditText>(R.id.etUsername)
         val etPass = dialogView.findViewById<EditText>(R.id.etPassword)
@@ -233,9 +236,12 @@ class MainActivity : Activity() {
         val btnCancel = dialogView.findViewById<Button>(R.id.btnCancelConfig)
 
         val current = configManager.getCredentials()
+        etNfs.setText(configManager.getNfsShare())
         etUrl.setText(current.serverUrl)
         etUser.setText(current.username)
         etPass.setText(current.password)
+
+        if (configManager.isUseNfs()) rbNfs.isChecked = true else rbNavi.isChecked = true
 
         val dialog = AlertDialog.Builder(this, android.R.style.Theme_DeviceDefault_Dialog_NoActionBar)
             .setView(dialogView)
@@ -243,55 +249,54 @@ class MainActivity : Activity() {
             .create()
 
         dialog.window?.setBackgroundDrawableResource(android.R.color.transparent)
-
-        if (isFirstRun) {
-            btnCancel.visibility = View.GONE
-        } else {
-            btnCancel.setOnClickListener { dialog.dismiss() }
-        }
+        btnCancel.setOnClickListener { dialog.dismiss() }
 
         btnSave.setOnClickListener {
+            val useNfs = rbNfs.isChecked
+            val nfsPath = etNfs.text.toString().trim()
             val url = etUrl.text.toString().trim()
             val user = etUser.text.toString().trim()
             val pass = etPass.text.toString()
 
-            if (url.isBlank() || user.isBlank() || pass.isBlank()) {
-                tvError.text = "⚠️ Please fill in all fields."
-                tvError.visibility = View.VISIBLE
-                return@setOnClickListener
-            }
-
-            btnSave.isEnabled = false
-            btnSave.text = "Connecting..."
-            tvError.visibility = View.GONE
-
-            activityScope.launch {
-                navidromeClient.updateCredentials(url, user, pass)
-                val ok = navidromeClient.pingServer()
-                if (ok) {
-                    configManager.saveCredentials(url, user, pass)
-                    dialog.dismiss()
-                    autoStartMusic()
-                } else {
-                    btnSave.isEnabled = true
-                    btnSave.text = "Verify & Connect"
-                    tvError.text = "❌ Connection failed. Check URL, username, and password."
+            if (useNfs) {
+                if (nfsPath.isBlank() || !nfsPath.contains(':')) {
+                    tvError.text = "⚠️ Enter NFS path as host:/folder (e.g. 192.168.1.53:/Alex/Christmas Music)"
                     tvError.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                configManager.saveNfsShare(nfsPath)
+                configManager.saveUseNfs(true)
+                dialog.dismiss()
+                startNfsPlayback(shuffle = false)
+            } else {
+                if (url.isBlank() || user.isBlank() || pass.isBlank()) {
+                    tvError.text = "⚠️ Fill in Navidrome URL, username, and password."
+                    tvError.visibility = View.VISIBLE
+                    return@setOnClickListener
+                }
+                btnSave.isEnabled = false
+                btnSave.text = "Connecting..."
+                tvError.visibility = View.GONE
+
+                activityScope.launch {
+                    navidromeClient.updateCredentials(url, user, pass)
+                    val ok = navidromeClient.pingServer()
+                    if (ok) {
+                        configManager.saveCredentials(url, user, pass)
+                        configManager.saveUseNfs(false)
+                        dialog.dismiss()
+                        startNavidromePlayback()
+                    } else {
+                        btnSave.isEnabled = true
+                        btnSave.text = "Connect & Play"
+                        tvError.text = "❌ Navidrome connection failed."
+                        tvError.visibility = View.VISIBLE
+                    }
                 }
             }
         }
 
         dialog.show()
-        etUrl.requestFocus()
-    }
-
-    private fun updateStatusBadge() {
-        val label = if (currentSceneTheme == SceneTheme.KAWAII) {
-            "${currentSceneTheme.displayName} (${KawaiiThemes.list[currentKawaiiPaletteIndex].name})"
-        } else {
-            currentSceneTheme.displayName
-        }
-        tvStatusBadge.text = "🔥 $label  •  🎵 $currentPlaylistName"
     }
 
     private fun setupVisualizer(sessionId: Int) {
@@ -333,11 +338,7 @@ class MainActivity : Activity() {
                 navidromeClient.prevTrack()
                 true
             }
-            KeyEvent.KEYCODE_DPAD_UP -> {
-                cycleSceneTheme()
-                true
-            }
-            KeyEvent.KEYCODE_DPAD_DOWN -> {
+            KeyEvent.KEYCODE_DPAD_DOWN, KeyEvent.KEYCODE_DPAD_UP -> {
                 showMenuDialog()
                 true
             }

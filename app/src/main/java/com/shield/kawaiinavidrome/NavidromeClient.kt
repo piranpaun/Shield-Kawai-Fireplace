@@ -5,7 +5,10 @@ import android.net.Uri
 import androidx.media3.common.MediaItem
 import androidx.media3.common.MediaMetadata
 import androidx.media3.common.Player
+import androidx.media3.datasource.DataSource
+import androidx.media3.datasource.DefaultHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
@@ -36,7 +39,18 @@ class NavidromeClient(
     private val onTrackChanged: (MediaMetadata) -> Unit,
     private val onAudioSessionReady: (Int) -> Unit
 ) {
-    val player: ExoPlayer = ExoPlayer.Builder(context).build()
+    val nfsClient = NfsClient()
+
+    private val routingFactory = DataSource.Factory {
+        val http = DefaultHttpDataSource.Factory()
+            .setAllowCrossProtocolRedirects(true)
+            .createDataSource()
+        RoutingDataSource(nfsClient, http)
+    }
+
+    val player: ExoPlayer = ExoPlayer.Builder(context)
+        .setMediaSourceFactory(DefaultMediaSourceFactory(routingFactory))
+        .build()
 
     init {
         player.addListener(object : Player.Listener {
@@ -53,6 +67,41 @@ class NavidromeClient(
         serverUrl = url.trim().removeSuffix("/")
         username = user.trim()
         password = pass
+    }
+
+    suspend fun loadAndPlayNfsShare(shareSpec: String, shuffle: Boolean = false): Int {
+        val files = nfsClient.scanAudioFiles(shareSpec)
+        if (files.isEmpty()) return 0
+
+        val ordered = if (shuffle) files.shuffled() else files
+        player.clearMediaItems()
+        ordered.forEach { file ->
+            val cleanTitle = file.name.substringBeforeLast('.')
+            val folderName = file.relativePath.substringBeforeLast('/', "Christmas Music")
+            val uri = Uri.Builder()
+                .scheme("nfs")
+                .authority("share")
+                .appendPath(file.name)
+                .appendQueryParameter("fh", file.fileHandleHex())
+                .appendQueryParameter("size", file.size.toString())
+                .build()
+
+            val metadata = MediaMetadata.Builder()
+                .setTitle(cleanTitle)
+                .setArtist(folderName)
+                .build()
+
+            val item = MediaItem.Builder()
+                .setMediaId(file.relativePath)
+                .setUri(uri)
+                .setMediaMetadata(metadata)
+                .build()
+
+            player.addMediaItem(item)
+        }
+        player.prepare()
+        player.playWhenReady = true
+        return ordered.size
     }
 
     private fun md5(input: String): String {
@@ -135,8 +184,8 @@ class NavidromeClient(
             tracks.add(
                 NavidromeTrack(
                     id = id,
-                    title = song.optString("title", "Sin título"),
-                    artist = song.optString("artist", "Artista desconocido"),
+                    title = song.optString("title", "Unknown"),
+                    artist = song.optString("artist", "Unknown"),
                     coverArtId = song.optString("coverArt", id)
                 )
             )
@@ -171,5 +220,9 @@ class NavidromeClient(
 
     fun nextTrack() = player.seekToNextMediaItem()
     fun prevTrack() = player.seekToPreviousMediaItem()
-    fun release() = player.release()
+
+    fun release() {
+        player.release()
+        nfsClient.closeReadSocket()
+    }
 }
